@@ -29,9 +29,13 @@ async function authFetch<T>(
     },
   })
   if (!res.ok) {
-    throw new Error(`Error ${res.status}: ${res.statusText}`)
+    const message = await res.text().catch(() => "")
+    throw new Error(message || `Error ${res.status}: ${res.statusText}`)
   }
-  return res.json()
+  const text = await res.text()
+  if (!text) return undefined as T
+
+  return JSON.parse(text) as T
 }
 
 export async function getDashboardToday(date?: string): Promise<DashboardToday | null> {
@@ -43,10 +47,112 @@ export async function getDashboardToday(date?: string): Promise<DashboardToday |
   }
 }
 
+export interface SharedDashboardData {
+  dailyTasks: DailyTask[]
+  claims: Claim[]
+  completedWorks: CompletedWork[]
+}
+
+const SHARED_DASHBOARD_CACHE_PREFIX = "shared-dashboard-cache"
+
+function sharedDashboardCacheKey(date: string) {
+  return `${SHARED_DASHBOARD_CACHE_PREFIX}:${date}`
+}
+
+function readSharedDashboardCache(date: string): SharedDashboardData | null {
+  if (typeof window === "undefined") return null
+
+  try {
+    const raw = window.localStorage.getItem(sharedDashboardCacheKey(date))
+    if (!raw) return null
+
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null
+
+    return {
+      dailyTasks: Array.isArray((parsed as SharedDashboardData).dailyTasks)
+        ? (parsed as SharedDashboardData).dailyTasks
+        : [],
+      claims: Array.isArray((parsed as SharedDashboardData).claims)
+        ? (parsed as SharedDashboardData).claims
+        : [],
+      completedWorks: Array.isArray((parsed as SharedDashboardData).completedWorks)
+        ? (parsed as SharedDashboardData).completedWorks
+        : [],
+    }
+  } catch {
+    return null
+  }
+}
+
+function saveSharedDashboardCache(date: string, data: SharedDashboardData) {
+  if (typeof window === "undefined") return
+  window.localStorage.setItem(sharedDashboardCacheKey(date), JSON.stringify(data))
+}
+
+export async function getSharedDashboardData(date: string): Promise<SharedDashboardData> {
+  try {
+    const fallback = readSharedDashboardCache(date)
+    const users = await getUsers()
+    const userIds = Array.from(
+      new Set(
+        users
+          .map((item) => (typeof item.id === "number" ? item.id : null))
+          .filter((id): id is number => id !== null)
+      )
+    )
+
+    if (userIds.length === 0) {
+      return (
+        fallback ?? {
+          dailyTasks: [],
+          claims: [],
+          completedWorks: [],
+        }
+      )
+    }
+
+    const [dailyTasksByUser, claimsByUser, completedWorksByUser] = await Promise.all([
+      Promise.all(userIds.map((userId) => getDailyTasks(userId, date))),
+      Promise.all(userIds.map((userId) => getClaims(userId, date))),
+      Promise.all(userIds.map((userId) => getCompletedWorks(userId, date))),
+    ])
+
+    const data = {
+      dailyTasks: dailyTasksByUser.flat(),
+      claims: claimsByUser.flat(),
+      completedWorks: completedWorksByUser.flat(),
+    }
+
+    if (data.dailyTasks.length || data.claims.length || data.completedWorks.length) {
+      saveSharedDashboardCache(date, data)
+    }
+
+    return data.dailyTasks.length || data.claims.length || data.completedWorks.length
+      ? data
+      : fallback ?? data
+  } catch {
+    const fallback = readSharedDashboardCache(date)
+    return {
+      dailyTasks: fallback?.dailyTasks ?? [],
+      claims: fallback?.claims ?? [],
+      completedWorks: fallback?.completedWorks ?? [],
+    }
+  }
+}
+
 // ── Tareas Recurrentes ──────────────────────────────────────
 export async function getRecurringTasks(userId: number): Promise<RecurringTask[]> {
   try {
     return await authFetch<RecurringTask[]>(`/recurring-tasks/${userId}`)
+  } catch {
+    return []
+  }
+}
+
+export async function getRecurringTaskCatalog(): Promise<RecurringTask[]> {
+  try {
+    return await authFetch<RecurringTask[]>("/recurring-tasks")
   } catch {
     return []
   }
@@ -66,7 +172,25 @@ export async function createRecurringTask(
   }
 }
 
-export async function deleteRecurringTask(id: number): Promise<boolean> {
+export async function createRecurringTaskVerbose(
+  userId: number,
+  data: RecurringTaskFormValues
+): Promise<{ task: RecurringTask | null; error?: string }> {
+  try {
+    const task = await authFetch<RecurringTask>("/recurring-tasks", {
+      method: "POST",
+      body: JSON.stringify({ ...data, userId }),
+    })
+    return { task }
+  } catch (error) {
+    return {
+      task: null,
+      error: error instanceof Error ? error.message : "Error al guardar la tarea recurrente",
+    }
+  }
+}
+
+export async function deleteRecurringTask(id: string | number): Promise<boolean> {
   try {
     await authFetch(`/recurring-tasks/${id}`, { method: "DELETE" })
     return true
@@ -92,6 +216,23 @@ export async function addDailyTask(data: Omit<DailyTask, "id">): Promise<DailyTa
     })
   } catch {
     return null
+  }
+}
+
+export async function addDailyTaskVerbose(
+  data: Omit<DailyTask, "id">
+): Promise<{ task: DailyTask | null; error?: string }> {
+  try {
+    const task = await authFetch<DailyTask>("/daily-tasks", {
+      method: "POST",
+      body: JSON.stringify(data),
+    })
+    return { task }
+  } catch (error) {
+    return {
+      task: null,
+      error: error instanceof Error ? error.message : "Error al activar la tarea",
+    }
   }
 }
 
@@ -128,6 +269,25 @@ export async function createClaim(
   }
 }
 
+export async function createClaimVerbose(
+  userId: number,
+  userName: string,
+  data: ClaimFormValues
+): Promise<{ claim: Claim | null; error?: string }> {
+  try {
+    const claim = await authFetch<Claim>("/claims", {
+      method: "POST",
+      body: JSON.stringify({ ...data, userId, userName }),
+    })
+    return { claim }
+  } catch (error) {
+    return {
+      claim: null,
+      error: error instanceof Error ? error.message : "Error al registrar el reclamo",
+    }
+  }
+}
+
 export async function updateClaim(
   id: string | number,
   data: Partial<ClaimFormValues>
@@ -139,6 +299,24 @@ export async function updateClaim(
     })
   } catch {
     return null
+  }
+}
+
+export async function updateClaimVerbose(
+  id: string | number,
+  data: Partial<ClaimFormValues>
+): Promise<{ claim: Claim | null; error?: string }> {
+  try {
+    const claim = await authFetch<Claim>(`/claims/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    })
+    return { claim }
+  } catch (error) {
+    return {
+      claim: null,
+      error: error instanceof Error ? error.message : "Error al actualizar el reclamo",
+    }
   }
 }
 
@@ -167,8 +345,27 @@ export async function createCompletedWork(
   }
 }
 
+export async function createCompletedWorkVerbose(
+  userId: number,
+  userName: string,
+  data: CompletedWorkFormValues
+): Promise<{ work: CompletedWork | null; error?: string }> {
+  try {
+    const work = await authFetch<CompletedWork>("/completed-works", {
+      method: "POST",
+      body: JSON.stringify({ ...data, userId, userName }),
+    })
+    return { work }
+  } catch (error) {
+    return {
+      work: null,
+      error: error instanceof Error ? error.message : "Error al registrar el trabajo",
+    }
+  }
+}
+
 export async function updateCompletedWork(
-  id: number,
+  id: string | number,
   data: Partial<CompletedWorkFormValues>
 ): Promise<CompletedWork | null> {
   try {
@@ -178,6 +375,24 @@ export async function updateCompletedWork(
     })
   } catch {
     return null
+  }
+}
+
+export async function updateCompletedWorkVerbose(
+  id: string | number,
+  data: Partial<CompletedWorkFormValues>
+): Promise<{ work: CompletedWork | null; error?: string }> {
+  try {
+    const work = await authFetch<CompletedWork>(`/completed-works/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    })
+    return { work }
+  } catch (error) {
+    return {
+      work: null,
+      error: error instanceof Error ? error.message : "Error al editar el trabajo",
+    }
   }
 }
 
@@ -206,6 +421,7 @@ export async function getStatisticsSummary(
 // ── Usuarios (admin) ───────────────────────────────────────
 
 export interface UserPayload {
+  id?: string | number
   name: string
   surname: string
   userName: string
@@ -236,7 +452,11 @@ async function userMutation(endpoint: string, options: RequestInit): Promise<str
     })
 
     const message = await res.text()
-    return message || (res.ok ? "Operacion completada" : "Error al procesar la solicitud")
+    if (!res.ok) {
+      return `Error: ${message || "Error al procesar la solicitud"}`
+    }
+
+    return message || "Operacion completada"
   } catch {
     return "Error de conexion con el servidor"
   }

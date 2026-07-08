@@ -9,7 +9,13 @@ import { AREAS, PROBLEM_TYPES } from "@/lib/constants"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
-import { FreeTextOptionsInput } from "@/components/free-text-options-input"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import {
   Form,
   FormControl,
@@ -53,7 +59,7 @@ export function ClaimForm() {
 
   async function onSubmit(values: FormValues) {
     setIsSubmitting(true)
-    addClaim({
+    const created = await addClaim({
       title: values.title,
       area: values.area,
       claimant: values.claimant,
@@ -62,10 +68,12 @@ export function ClaimForm() {
       solution: values.solution?.trim() ?? "",
       images,
     })
-    form.reset()
-    setImages([])
+    if (created) {
+      form.reset()
+      setImages([])
+      toast.success("Reclamo registrado correctamente")
+    }
     setIsSubmitting(false)
-    toast.success("Reclamo registrado correctamente")
   }
 
   return (
@@ -113,12 +121,18 @@ export function ClaimForm() {
                   <FormItem>
                     <FormLabel>Area</FormLabel>
                     <FormControl>
-                      <FreeTextOptionsInput
-                        value={field.value}
-                        onChange={field.onChange}
-                        options={AREAS}
-                        placeholder="Escribir o seleccionar area"
-                      />
+                      <Select value={field.value} onValueChange={field.onChange}>
+                        <SelectTrigger className="w-full">
+                          <SelectValue placeholder="Seleccionar area" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {AREAS.map((area) => (
+                            <SelectItem key={area} value={area}>
+                              {area}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
                     </FormControl>
                     <FormMessage />
                   </FormItem>
@@ -131,12 +145,18 @@ export function ClaimForm() {
                   <FormItem>
                     <FormLabel>Tipo de problema</FormLabel>
                     <FormControl>
-                      <FreeTextOptionsInput
-                        value={field.value}
-                        onChange={field.onChange}
-                        options={PROBLEM_TYPES}
-                        placeholder="Escribir o seleccionar tipo"
-                      />
+                      <Select value={field.value} onValueChange={field.onChange}>
+                        <SelectTrigger className="w-full">
+                          <SelectValue placeholder="Seleccionar tipo" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {PROBLEM_TYPES.map((type) => (
+                            <SelectItem key={type} value={type}>
+                              {type}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
                     </FormControl>
                     <FormMessage />
                   </FormItem>

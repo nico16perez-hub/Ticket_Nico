@@ -37,7 +37,7 @@ export function LoginForm() {
 
     setIsLoading(true)
     const result = await login({
-      userName: formData.userName,
+      userName: formData.userName.trim().toLowerCase(),
       password: formData.password,
       remember: formData.remember,
     })

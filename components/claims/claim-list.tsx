@@ -29,10 +29,11 @@ import {
 } from "@/components/ui/select"
 import { AlertTriangle, ChevronDown, ChevronUp, Eye, Pencil, Save } from "lucide-react"
 import type { Claim, ClaimFormValues } from "@/lib/types"
+import { updateClaimVerbose } from "@/lib/api"
 import { toast } from "sonner"
 
 export function ClaimList() {
-  const { claims, todayStr, updateClaim } = useData()
+  const { claims, todayStr } = useData()
   const [isOpen, setIsOpen] = useState(true)
   const [editingClaim, setEditingClaim] = useState<Claim | null>(null)
   const [isSaving, setIsSaving] = useState(false)
@@ -67,12 +68,14 @@ export function ClaimList() {
   const onSave = async () => {
     if (!editingClaim) return
     setIsSaving(true)
-    const ok = await updateClaim(editingClaim.id, editData)
+    const result = await updateClaimVerbose(editingClaim.id, editData)
     setIsSaving(false)
 
-    if (ok) {
+    if (result.claim) {
       toast.success("Reclamo actualizado")
       setEditingClaim(null)
+    } else {
+      toast.error(result.error ?? "No se pudo actualizar el reclamo")
     }
   }
 

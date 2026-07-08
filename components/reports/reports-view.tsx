@@ -36,6 +36,7 @@ import {
   parseISO,
 } from "date-fns"
 import { es } from "date-fns/locale"
+import { parseDisplayDate } from "@/lib/date-utils"
 import type { CountEntry, ReportPeriod, StatisticsSummary } from "@/lib/types"
 
 const TYPE_CONFIG = {
@@ -392,7 +393,7 @@ export function ReportsView() {
                                 </div>
                                 <div>
                                   <p className="text-sm font-medium text-muted-foreground">Fecha</p>
-                                  <p>{format(parseISO(task.date), "dd/MM/yyyy HH:mm", { locale: es })}</p>
+                                  <p>{format(parseDisplayDate(task.date), "dd/MM/yyyy HH:mm", { locale: es })}</p>
                                 </div>
                                 <div>
                                   <p className="text-sm font-medium text-muted-foreground">Usuario</p>

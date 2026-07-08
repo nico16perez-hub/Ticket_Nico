@@ -15,6 +15,7 @@ import { toast } from "sonner"
 function buildPayload(values: { name: string; surname: string; userName: string; password: string; area: string; role: "ADMIN" | "USER" }): UserPayload {
   return {
     ...values,
+    userName: values.userName.trim().toLowerCase(),
     password: values.password ? encryptPassword(values.password) : "",
   }
 }
@@ -25,6 +26,7 @@ export function UserManagement() {
   const [createForm, setCreateForm] = useState({ name: "", surname: "", userName: "", password: "", area: "Sistemas", role: "USER" as "ADMIN" | "USER" })
   const [editForm, setEditForm] = useState({ name: "", surname: "", userName: "", password: "", area: "Sistemas", role: "USER" as "ADMIN" | "USER" })
   const [editingUserName, setEditingUserName] = useState<string | null>(null)
+  const [editingUserId, setEditingUserId] = useState<number | null>(null)
 
   const showResult = (message: string, ok: boolean) => {
     if (ok) {
@@ -78,17 +80,19 @@ export function UserManagement() {
       role: data.role,
     })
     setEditingUserName(userName)
+    setEditingUserId(data.id ?? null)
     setLoading(null)
   }
 
   const onSaveEdit = async (e: FormEvent) => {
     e.preventDefault()
-    if (!editingUserName) return
+    if (!editingUserName || editingUserId == null) return
     setLoading("edit")
-    const message = await editUser(buildPayload(editForm))
+    const message = await editUser({ ...buildPayload(editForm), id: editingUserId })
     showResult(message, !message.toLowerCase().includes("error"))
     setLoading(null)
     setEditingUserName(null)
+    setEditingUserId(null)
     await refreshUsers()
   }
 
@@ -147,7 +151,16 @@ export function UserManagement() {
                 <RoleSelect value={editForm.role} onChange={(role) => setEditForm((p) => ({ ...p, role }))} />
                 <div className="flex gap-2">
                   <Button disabled={loading === "edit"} type="submit">Guardar cambios</Button>
-                  <Button type="button" variant="ghost" onClick={() => setEditingUserName(null)}>Cancelar</Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    onClick={() => {
+                      setEditingUserName(null)
+                      setEditingUserId(null)
+                    }}
+                  >
+                    Cancelar
+                  </Button>
                 </div>
               </form>
             )}

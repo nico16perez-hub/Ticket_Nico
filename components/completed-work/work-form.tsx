@@ -47,10 +47,12 @@ export function WorkForm() {
 
   async function onSubmit(values: FormValues) {
     setIsSubmitting(true)
-    addCompletedWork(values)
-    form.reset()
+    const created = await addCompletedWork(values)
+    if (created) {
+      form.reset()
+      toast.success("Trabajo registrado correctamente")
+    }
     setIsSubmitting(false)
-    toast.success("Trabajo registrado correctamente")
   }
 
   return (

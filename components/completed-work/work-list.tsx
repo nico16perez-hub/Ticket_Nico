@@ -1,7 +1,9 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { useData } from "@/lib/data-context"
+import { useAuth } from "@/lib/auth-context"
+import { readCompletedWorkMetaCache, saveCompletedWorkMeta } from "@/lib/completed-work-meta"
 import { AREAS } from "@/lib/constants"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -33,9 +35,11 @@ import { toast } from "sonner"
 
 export function WorkList() {
   const { completedWorks, todayStr, updateCompletedWork } = useData()
+  const { user } = useAuth()
   const [isOpen, setIsOpen] = useState(true)
   const [editingWork, setEditingWork] = useState<CompletedWork | null>(null)
   const [isSaving, setIsSaving] = useState(false)
+  const [workMeta, setWorkMeta] = useState<Record<string, { solution?: string; timestamp?: string; editedBy?: string; editedAt?: string }>>({})
   const [editData, setEditData] = useState<CompletedWorkFormValues>({
     title: "",
     area: "",
@@ -47,12 +51,20 @@ export function WorkList() {
     [completedWorks, todayStr]
   )
 
+  useEffect(() => {
+    if (!user) return
+    queueMicrotask(() => {
+      setWorkMeta(readCompletedWorkMetaCache())
+    })
+  }, [user])
+
   const openEdit = (work: CompletedWork) => {
     setEditingWork(work)
     setEditData({
       title: work.title,
       area: work.area,
       description: work.description,
+      solution: work.solution ?? workMeta[String(work.id)]?.solution ?? "",
     })
   }
 
@@ -63,6 +75,24 @@ export function WorkList() {
     setIsSaving(false)
 
     if (ok) {
+      if (user) {
+        const editedAt = new Date().toISOString()
+        const editedBy = `${user.name} ${user.surname}`.trim()
+        saveCompletedWorkMeta(user.id, editingWork.id, {
+          solution: editData.solution?.trim() ?? "",
+          editedBy,
+          editedAt,
+        })
+        setWorkMeta((prev) => ({
+          ...prev,
+          [String(editingWork.id)]: {
+            ...(prev[String(editingWork.id)] ?? {}),
+            solution: editData.solution?.trim() ?? "",
+            editedBy,
+            editedAt,
+          },
+        }))
+      }
       toast.success("Trabajo actualizado")
       setEditingWork(null)
     }
@@ -136,28 +166,59 @@ export function WorkList() {
                               <p className="text-sm font-medium text-muted-foreground">Area</p>
                               <p>{work.area}</p>
                             </div>
-                          <div>
-                            <p className="text-sm font-medium text-muted-foreground">Descripcion</p>
-                            <p className="whitespace-pre-wrap">{work.description}</p>
+                            <div>
+                              <p className="text-sm font-medium text-muted-foreground">Descripcion</p>
+                              <p className="whitespace-pre-wrap">{work.description}</p>
+                            </div>
+                            <div>
+                              <p className="text-sm font-medium text-muted-foreground">Solucion</p>
+                              <p className="whitespace-pre-wrap">
+                                {work.solution?.trim() ||
+                                  workMeta[String(work.id)]?.solution ||
+                                  "Sin solucion registrada"}
+                              </p>
+                            </div>
+                            <div>
+                              <p className="text-sm font-medium text-muted-foreground">Hora</p>
+                              <p>
+                                {workMeta[String(work.id)]?.timestamp
+                                  ? new Date(workMeta[String(work.id)]!.timestamp!).toLocaleTimeString([], {
+                                      hour: "2-digit",
+                                      minute: "2-digit",
+                                    })
+                                  : "Sin hora registrada"}
+                              </p>
+                            </div>
+                            <div className="rounded-md border border-border/50 bg-muted/20 p-3">
+                              <p className="text-sm font-medium text-muted-foreground">Registro de edicion</p>
+                              <p className="mt-1">
+                                Editado por: {work.editedBy || workMeta[String(work.id)]?.editedBy || "Sin ediciones registradas"}
+                              </p>
+                              <p>
+                                Hora de edicion:{" "}
+                                {work.editedAt || workMeta[String(work.id)]?.editedAt
+                                  ? new Date((work.editedAt || workMeta[String(work.id)]?.editedAt)!).toLocaleString([], {
+                                      day: "2-digit",
+                                      month: "2-digit",
+                                      year: "numeric",
+                                      hour: "2-digit",
+                                      minute: "2-digit",
+                                    })
+                                  : "Sin ediciones registradas"}
+                              </p>
+                            </div>
                           </div>
-                          <div>
-                            <p className="text-sm font-medium text-muted-foreground">Solucion</p>
-                            <p className="whitespace-pre-wrap">
-                              {work.solution?.trim() || "Sin solucion registrada"}
-                            </p>
-                          </div>
-                        </div>
-                      </DialogContent>
-                    </Dialog>
+                        </DialogContent>
+                      </Dialog>
 
                       <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-8 w-8 shrink-0"
+                        variant="outline"
+                        size="sm"
+                        className="shrink-0"
                         onClick={() => openEdit(work)}
                       >
-                        <Pencil className="h-4 w-4" />
-                        <span className="sr-only">Editar trabajo</span>
+                        <Pencil className="mr-2 h-4 w-4" />
+                        Editar
                       </Button>
                     </div>
                   ))}
@@ -200,6 +261,13 @@ export function WorkList() {
             placeholder="Descripcion"
             value={editData.description}
             onChange={(e) => setEditData((prev) => ({ ...prev, description: e.target.value }))}
+          />
+
+          <Textarea
+            className="text-base min-h-[90px]"
+            placeholder="Solucion"
+            value={editData.solution ?? ""}
+            onChange={(e) => setEditData((prev) => ({ ...prev, solution: e.target.value }))}
           />
 
           <div className="flex justify-end">

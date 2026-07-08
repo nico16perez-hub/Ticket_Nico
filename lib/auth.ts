@@ -2,23 +2,28 @@ import type { User } from "@/lib/types"
 
 const TOKEN_KEY = "token"
 const USER_KEYS = ["id", "name", "surname", "userName", "role", "area"] as const
+let volatileToken: string | null = null
+let volatileUser: User | null = null
 
 function readFromStorages(key: string): string | null {
   if (typeof window === "undefined") return null
-  return localStorage.getItem(key) ?? sessionStorage.getItem(key)
+  return localStorage.getItem(key)
 }
 
 // ── Token helpers ───────────────────────────────────────────
 export function getToken(): string | null {
-  return readFromStorages(TOKEN_KEY)
+  return readFromStorages(TOKEN_KEY) ?? volatileToken
 }
 
 export function setToken(token: string, remember = true): void {
   if (typeof window === "undefined") return
+  localStorage.removeItem(TOKEN_KEY)
+  sessionStorage.removeItem(TOKEN_KEY)
+  volatileToken = null
   if (remember) {
     localStorage.setItem(TOKEN_KEY, token)
   } else {
-    sessionStorage.setItem(TOKEN_KEY, token)
+    volatileToken = token
   }
 }
 
@@ -28,7 +33,7 @@ export function getStoredUser(): User | null {
   const token = readFromStorages(TOKEN_KEY)
   const id = readFromStorages("id")
   const name = readFromStorages("name")
-  if (!token || !id || !name) return null
+  if (!token || !id || !name) return volatileUser
 
   // read other fields from either storage
   const surname = readFromStorages("surname") ?? ""
@@ -48,24 +53,21 @@ export function getStoredUser(): User | null {
 }
 
 export function storeUser(user: User, remember: boolean): void {
-  // store token and user fields in the chosen storage
   if (typeof window === "undefined") return
+  volatileUser = user
+  for (const key of ["token", ...USER_KEYS]) {
+    localStorage.removeItem(key)
+    sessionStorage.removeItem(key)
+  }
+  setToken(user.token, remember)
+
   if (remember) {
-    localStorage.setItem(TOKEN_KEY, user.token)
     localStorage.setItem("id", String(user.id))
     localStorage.setItem("name", user.name)
     localStorage.setItem("surname", user.surname)
     localStorage.setItem("userName", user.userName)
     localStorage.setItem("role", user.role)
     localStorage.setItem("area", user.area)
-  } else {
-    sessionStorage.setItem(TOKEN_KEY, user.token)
-    sessionStorage.setItem("id", String(user.id))
-    sessionStorage.setItem("name", user.name)
-    sessionStorage.setItem("surname", user.surname)
-    sessionStorage.setItem("userName", user.userName)
-    sessionStorage.setItem("role", user.role)
-    sessionStorage.setItem("area", user.area)
   }
 }
 
@@ -74,6 +76,8 @@ export function clearAuth(): void {
   // remove from both storages to be safe
   localStorage.removeItem(TOKEN_KEY)
   sessionStorage.removeItem(TOKEN_KEY)
+  volatileToken = null
+  volatileUser = null
   for (const key of USER_KEYS) {
     localStorage.removeItem(key)
     sessionStorage.removeItem(key)
@@ -81,5 +85,6 @@ export function clearAuth(): void {
 }
 
 export function isAdmin(user: User | null): boolean {
-  return user?.role === "ADMIN"
+  const role = user?.role?.trim().toLowerCase()
+  return role === "admin" || role?.includes("admin") || false
 }

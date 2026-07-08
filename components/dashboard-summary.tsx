@@ -3,9 +3,14 @@
 import { useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 import * as api from "@/lib/api"
+import { canViewAllTasks } from "@/lib/access"
 import { useAuth } from "@/lib/auth-context"
 import { isAdmin } from "@/lib/auth"
-import type { Claim, ClaimFormValues, DashboardToday } from "@/lib/types"
+import type { Claim, ClaimFormValues, CompletedWorkFormValues } from "@/lib/types"
+import type { SharedDashboardData } from "@/lib/api"
+import { readCompletedWorkMetaCache, saveCompletedWorkMeta } from "@/lib/completed-work-meta"
+import { readClaimAuditCache, saveClaimAuditMeta } from "@/lib/claim-audit-meta"
+import { hasExplicitTime, parseDisplayDate } from "@/lib/date-utils"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -76,6 +81,7 @@ type FilterType = "todas" | TaskType | "pendientes"
 
 type SummaryTask = {
   id: string | number
+  userId?: number
   type: TaskType
   title: string
   description: string
@@ -85,6 +91,9 @@ type SummaryTask = {
   claimant?: string
   problemType?: string
   solution?: string
+  timestamp?: string
+  editedBy?: string
+  editedAt?: string
   images?: string[] | null
   pending?: boolean
 }
@@ -95,6 +104,8 @@ type ActivityTask = SummaryTask & {
 }
 
 type ClaimAudit = {
+  createdBy?: string
+  createdAt?: string
   editedBy?: string
   editedAt?: string
   resolvedBy?: string
@@ -113,6 +124,56 @@ function matchesSelectedDate(value: string, selectedDate: string) {
 
 function sameId(a: string | number, b: string | number) {
   return String(a) === String(b)
+}
+
+function normalizeTaskText(value?: string) {
+  return (value ?? "").trim().toLowerCase()
+}
+
+function uniqueRecurringDailyTasks(tasks: SummaryTask[]) {
+  const seen = new Set<string>()
+  const unique: SummaryTask[] = []
+
+  for (const task of tasks) {
+    const key = [
+      task.userId ?? task.userName,
+      task.date.slice(0, 10),
+      normalizeTaskText(task.title),
+      normalizeTaskText(task.description),
+    ].join("::")
+
+    if (seen.has(key)) continue
+    seen.add(key)
+    unique.push(task)
+  }
+
+  return unique
+}
+
+type RecurringTaskOwner = {
+  id: number
+  name: string
+  surname: string
+  area?: string
+}
+
+async function loadAcceptedRecurringTasksForUser(
+  selectedDate: string,
+  owner: RecurringTaskOwner
+): Promise<SummaryTask[]> {
+  const tasks = await api.getRecurringTasks(owner.id)
+  const userName = `${owner.name} ${owner.surname}`.trim()
+
+  return tasks.map((task) => ({
+    id: `recurrente-${owner.id}-${task.id}`,
+    userId: owner.id,
+    type: "recurrente",
+    title: task.title,
+    description: task.description,
+    area: owner.area ?? "Sistemas",
+    userName,
+    date: selectedDate,
+  }))
 }
 
 function buildClaimFormValues(claim: Partial<SummaryTask & Claim>): ClaimFormValues {
@@ -143,7 +204,9 @@ export function DashboardSummary() {
   const { user } = useAuth()
   const today = toDateInputValue(new Date())
   const [selectedDate, setSelectedDate] = useState(today)
-  const [dashboard, setDashboard] = useState<DashboardToday | null>(null)
+  const [dashboard, setDashboard] = useState<SharedDashboardData | null>(null)
+  const [dailyTasks, setDailyTasks] = useState<SummaryTask[]>([])
+  const [acceptedRecurringTasks, setAcceptedRecurringTasks] = useState<SummaryTask[]>([])
   const [loading, setLoading] = useState(false)
   const [activeFilter, setActiveFilter] = useState<FilterType>("todas")
   const [search, setSearch] = useState("")
@@ -153,21 +216,39 @@ export function DashboardSummary() {
   const [claimDetail, setClaimDetail] = useState<Claim | null>(null)
   const [solutionDraft, setSolutionDraft] = useState("")
   const [isEditingClaim, setIsEditingClaim] = useState(false)
+  const [isEditingWork, setIsEditingWork] = useState(false)
   const [claimEditData, setClaimEditData] = useState<ClaimFormValues | null>(null)
+  const [workEditData, setWorkEditData] = useState<CompletedWorkFormValues | null>(null)
   const [claimAudit, setClaimAudit] = useState<Record<string, ClaimAudit>>({})
+  const [workMeta, setWorkMeta] = useState<Record<string, { solution?: string; timestamp?: string; editedBy?: string; editedAt?: string }>>({})
   const [isSavingClaim, setIsSavingClaim] = useState(false)
+  const [isSavingWork, setIsSavingWork] = useState(false)
   const currentUserName = user ? `${user.name} ${user.surname}` : "Usuario actual"
 
   useEffect(() => {
-    if (!selectedDate) return
+    if (!selectedDate || !user) return
 
     let cancelled = false
 
     const loadDashboard = async () => {
       setLoading(true)
-      const data = await api.getDashboardToday(selectedDate)
+      const data = canViewAllTasks(user)
+        ? await api.getSharedDashboardData(selectedDate)
+        : {
+            dailyTasks: await api.getDailyTasks(user.id, selectedDate),
+            claims: await api.getClaims(user.id, selectedDate),
+            completedWorks: await api.getCompletedWorks(user.id, selectedDate),
+          }
+      const acceptedRecurring = await loadAcceptedRecurringTasksForUser(selectedDate, {
+        id: user.id,
+        name: user.name,
+        surname: user.surname,
+        area: user.area,
+      })
       if (!cancelled) {
         setDashboard(data)
+        setDailyTasks(data.dailyTasks ?? [])
+        setAcceptedRecurringTasks(acceptedRecurring)
         setLoading(false)
       }
     }
@@ -177,19 +258,20 @@ export function DashboardSummary() {
     return () => {
       cancelled = true
     }
-  }, [selectedDate])
+  }, [selectedDate, user])
+
+  useEffect(() => {
+    if (!user) return
+
+    queueMicrotask(() => {
+      setClaimAudit(readClaimAuditCache())
+      setWorkMeta(readCompletedWorkMetaCache())
+    })
+  }, [user])
 
   const recurrentTasks = useMemo<SummaryTask[]>(
-    () =>
-      (dashboard?.recurringTasks ?? []).map((task) => ({
-        id: task.id,
-        type: "recurrente",
-        title: task.title,
-        description: task.description,
-        userName: task.userName,
-        date: dashboard?.date ?? selectedDate,
-      })),
-    [dashboard, selectedDate]
+    () => uniqueRecurringDailyTasks(acceptedRecurringTasks),
+    [acceptedRecurringTasks]
   )
 
   const allClaimTasks = useMemo<SummaryTask[]>(
@@ -198,6 +280,7 @@ export function DashboardSummary() {
         .filter((claim) => matchesSelectedDate(claim.date, selectedDate))
         .map((claim) => ({
           id: claim.id,
+          userId: claim.userId,
           type: "reclamo",
           title: claim.title,
           description: claim.description,
@@ -222,22 +305,36 @@ export function DashboardSummary() {
     () =>
       (dashboard?.completedWorks ?? [])
         .filter((work) => matchesSelectedDate(work.date, selectedDate))
-        .map((work) => ({
-          id: work.id,
-          type: "trabajo",
-          title: work.title,
-          description: work.description,
-          area: work.area,
-          userName: work.userName,
-          date: work.date,
-          solution: work.solution,
-        })),
-    [dashboard, selectedDate]
+        .map((work) => {
+          const meta = workMeta[String(work.id)]
+          const matchedClaim = dashboard?.claims.find(
+            (claim) =>
+              claim.title === work.title &&
+              claim.area === work.area &&
+              claim.description === work.description
+          )
+
+          return {
+            id: work.id,
+            userId: work.userId,
+            type: "trabajo",
+            title: work.title,
+            description: work.description,
+            area: work.area,
+            userName: work.userName,
+            date: work.date,
+            solution: work.solution || matchedClaim?.solution || meta?.solution || "",
+            timestamp: meta?.timestamp,
+            editedBy: work.editedBy || meta?.editedBy,
+            editedAt: work.editedAt || meta?.editedAt,
+          }
+        }),
+    [dashboard, selectedDate, workMeta]
   )
 
   const dayTasks = useMemo(
-    () => [...recurrentTasks, ...allClaimTasks, ...workTasks],
-    [allClaimTasks, recurrentTasks, workTasks]
+    () => [...recurrentTasks, ...claimTasks, ...workTasks],
+    [claimTasks, recurrentTasks, workTasks]
   )
 
   const pendingTasks = useMemo(
@@ -248,7 +345,7 @@ export function DashboardSummary() {
   const activityTasks = useMemo<ActivityTask[]>(
     () =>
       dayTasks.map((task) => {
-        const audit = claimAudit[String(task.id)]
+        const audit = claimAudit[String(task.id)] ?? null
 
         if (task.type !== "reclamo") {
           return {
@@ -259,7 +356,7 @@ export function DashboardSummary() {
         }
 
         const resolved = !task.pending
-        const meta: string[] = [`Creado por: ${task.userName}`]
+        const meta: string[] = [`Creado por: ${audit?.createdBy ?? task.userName}`]
 
         if (audit?.editedBy) {
           meta.push(`Editado por: ${audit.editedBy}`)
@@ -318,6 +415,7 @@ export function DashboardSummary() {
       const resetSelection = async () => {
         setClaimDetail(null)
         setIsEditingClaim(false)
+        setIsEditingWork(false)
       }
 
       void resetSelection()
@@ -350,11 +448,23 @@ export function DashboardSummary() {
     setOpenTaskId(`${task.type}-${task.id}`)
     setSolutionDraft(task.solution ?? "")
     setIsEditingClaim(false)
+    setIsEditingWork(false)
+    setWorkEditData(null)
   }
 
   const startEditClaim = (task: SummaryTask) => {
     setIsEditingClaim(true)
     setClaimEditData(buildClaimFormValues(claimDetail && sameId(claimDetail.id, task.id) ? claimDetail : task))
+  }
+
+  const startEditWork = (task: SummaryTask) => {
+    setIsEditingWork(true)
+    setWorkEditData({
+      title: task.title,
+      area: task.area ?? "",
+      description: task.description,
+      solution: task.solution ?? "",
+    })
   }
 
   const resolveClaim = async (task: SummaryTask) => {
@@ -376,7 +486,7 @@ export function DashboardSummary() {
     }
 
     setIsSavingClaim(true)
-    const updated = await api.updateClaim(claim.id, {
+    const updateResult = await api.updateClaimVerbose(claim.id, {
       title: claim.title,
       area: claim.area,
       claimant: claim.claimant,
@@ -387,43 +497,70 @@ export function DashboardSummary() {
     })
     setIsSavingClaim(false)
 
-    if (!updated) {
-      toast.error("Error al resolver el reclamo")
+    if (!updateResult.claim) {
+      toast.error(updateResult.error ?? "Error al resolver el reclamo")
       return
     }
+    const updated = updateResult.claim
 
-    const workCreated = await api.createCompletedWork(user?.id ?? claim.userId, currentUserName, {
+    const { work: workCreated, error: workError } = await api.createCompletedWorkVerbose(user?.id ?? claim.userId, currentUserName, {
       title: updated.title,
       area: updated.area,
       description: updated.description,
       solution,
     })
 
+    if (workCreated && user) {
+      saveCompletedWorkMeta(user.id, workCreated.id, {
+        solution,
+        timestamp: new Date().toISOString(),
+      })
+    }
+
+    const resolvedAt = new Date().toISOString()
+    const currentAudit = claimAudit[String(updated.id)] ?? {}
+    const nextAudit: ClaimAudit = {
+      ...currentAudit,
+      resolvedBy: currentUserName,
+      resolvedAt,
+      editHistory: currentAudit.editHistory ?? [],
+      resolutionHistory: [
+        ...(currentAudit.resolutionHistory ?? []),
+        { by: currentUserName, at: resolvedAt },
+      ],
+    }
+
     setClaimDetail(updated)
     setClaimEditData(buildClaimFormValues(updated))
     setClaimAudit((prev) => ({
       ...prev,
-      [String(updated.id)]: {
-        ...prev[String(updated.id)],
-        resolvedBy: currentUserName,
-        resolvedAt: new Date().toISOString(),
-        editHistory: prev[String(updated.id)]?.editHistory ?? [],
-        resolutionHistory: [
-          ...(prev[String(updated.id)]?.resolutionHistory ?? []),
-          { by: currentUserName, at: new Date().toISOString() },
-        ],
-      },
+      [String(updated.id)]: nextAudit,
     }))
+    if (user) {
+      saveClaimAuditMeta(user.id, updated.id, nextAudit)
+    }
     setDashboard((prev) =>
       prev
         ? {
             ...prev,
             claims: prev.claims.map((item) => (sameId(item.id, task.id) ? updated : item)),
+            completedWorks: workCreated
+              ? [
+                  ...prev.completedWorks.filter((item) => !sameId(item.id, workCreated.id)),
+                  workCreated,
+                ]
+              : prev.completedWorks,
           }
         : prev
     )
 
-    const freshDashboard = await api.getDashboardToday(selectedDate)
+    const freshDashboard = canViewAllTasks(user)
+      ? await api.getSharedDashboardData(selectedDate)
+      : {
+          dailyTasks: await api.getDailyTasks(user?.id ?? 0, selectedDate),
+          claims: await api.getClaims(user?.id ?? 0, selectedDate),
+          completedWorks: await api.getCompletedWorks(user?.id ?? 0, selectedDate),
+        }
     if (freshDashboard) {
       setDashboard(freshDashboard)
     }
@@ -432,7 +569,7 @@ export function DashboardSummary() {
     if (workCreated) {
       toast.success("Reclamo resuelto y movido a trabajos realizados")
     } else {
-      toast.warning("Reclamo resuelto, pero no se pudo registrar en trabajos realizados")
+      toast.warning(workError ?? "Reclamo resuelto, pero no se pudo registrar en trabajos realizados")
     }
   }
 
@@ -450,7 +587,7 @@ export function DashboardSummary() {
     const data = claimEditData ?? buildClaimFormValues(claim)
 
     setIsSavingClaim(true)
-    const updated = await api.updateClaim(claim.id, {
+    const updateResult = await api.updateClaimVerbose(claim.id, {
       title: data.title,
       area: data.area,
       claimant: data.claimant,
@@ -461,26 +598,34 @@ export function DashboardSummary() {
     })
     setIsSavingClaim(false)
 
-    if (!updated) {
-      toast.error("Error al guardar los cambios")
+    if (!updateResult.claim) {
+      toast.error(updateResult.error ?? "Error al guardar los cambios")
       return
+    }
+    const updated = updateResult.claim
+
+    const editedAt = new Date().toISOString()
+    const currentAudit = claimAudit[String(updated.id)] ?? {}
+    const nextAudit: ClaimAudit = {
+      ...currentAudit,
+      editedBy: currentUserName,
+      editedAt,
+      editHistory: [
+        ...(currentAudit.editHistory ?? []),
+        { by: currentUserName, at: editedAt },
+      ],
+      resolutionHistory: currentAudit.resolutionHistory ?? [],
     }
 
     setClaimDetail(updated)
     setClaimEditData(buildClaimFormValues(updated))
     setClaimAudit((prev) => ({
       ...prev,
-      [String(updated.id)]: {
-        ...prev[String(updated.id)],
-        editedBy: currentUserName,
-        editedAt: new Date().toISOString(),
-        editHistory: [
-          ...(prev[String(updated.id)]?.editHistory ?? []),
-          { by: currentUserName, at: new Date().toISOString() },
-        ],
-        resolutionHistory: prev[String(updated.id)]?.resolutionHistory ?? [],
-      },
+      [String(updated.id)]: nextAudit,
     }))
+    if (user) {
+      saveClaimAuditMeta(user.id, updated.id, nextAudit)
+    }
     setDashboard((prev) =>
       prev
         ? {
@@ -491,6 +636,58 @@ export function DashboardSummary() {
     )
     setIsEditingClaim(false)
     toast.success("Reclamo actualizado")
+  }
+
+  const saveEditedWork = async (task: SummaryTask) => {
+    const data = workEditData ?? {
+      title: task.title,
+      area: task.area ?? "",
+      description: task.description,
+      solution: task.solution ?? "",
+    }
+
+    setIsSavingWork(true)
+    const result = await api.updateCompletedWorkVerbose(task.id, data)
+    setIsSavingWork(false)
+
+    if (!result.work) {
+      toast.error(result.error ?? "Error al editar el trabajo")
+      return
+    }
+
+    const editedAt = result.work.editedAt ?? new Date().toISOString()
+    const editedBy = result.work.editedBy ?? currentUserName
+
+    if (user) {
+      saveCompletedWorkMeta(user.id, result.work.id, {
+        solution: data.solution?.trim() ?? "",
+        editedBy,
+        editedAt,
+      })
+    }
+
+    setWorkMeta((prev) => ({
+      ...prev,
+      [String(result.work!.id)]: {
+        ...(prev[String(result.work!.id)] ?? {}),
+        solution: data.solution?.trim() ?? "",
+        editedBy,
+        editedAt,
+      },
+    }))
+
+    setDashboard((prev) =>
+      prev
+        ? {
+            ...prev,
+            completedWorks: prev.completedWorks.map((item) =>
+              sameId(item.id, task.id) ? result.work! : item
+            ),
+          }
+        : prev
+    )
+    setIsEditingWork(false)
+    toast.success("Trabajo actualizado")
   }
 
   const selectedDateObject = parseISO(selectedDate || today)
@@ -703,7 +900,7 @@ export function DashboardSummary() {
                             </Badge>
                           </div>
                           <span className="mt-1 block text-xs text-muted-foreground">
-                            {format(new Date(task.date), "dd/MM/yyyy HH:mm", { locale: es })}
+                            {format(parseDisplayDate(task.date), "dd/MM/yyyy HH:mm", { locale: es })}
                           </span>
                           <span className="mt-2 block text-xs text-muted-foreground/80">
                             {task.type === "reclamo" ? task.metaLine : `Responsable: ${task.userName}`}
@@ -819,6 +1016,7 @@ export function DashboardSummary() {
             <div className="flex flex-col gap-2">
               {filteredTasks.map((task) => {
                 const config = TYPE_CONFIG[task.type]
+                const taskAudit = claimAudit[String(task.id)] ?? null
 
                 return (
                   <div
@@ -896,13 +1094,11 @@ export function DashboardSummary() {
                         } else {
                           setOpenTaskId(null)
                           setIsEditingClaim(false)
+                          setIsEditingWork(false)
                         }
                       }}
                     >
-                    <DialogContent
-                      className="max-w-2xl"
-                      onClick={(event) => event.stopPropagation()}
-                    >
+                    <DialogContent className="max-w-2xl">
                         <DialogHeader>
                           <div className="flex items-start justify-between gap-3">
                             <div>
@@ -915,6 +1111,12 @@ export function DashboardSummary() {
                             </div>
                             {task.type === "reclamo" && !isEditingClaim && (
                               <Button type="button" variant="outline" size="sm" onClick={() => startEditClaim(task)}>
+                                <Pencil className="mr-2 h-4 w-4" />
+                                Editar
+                              </Button>
+                            )}
+                            {task.type === "trabajo" && !isEditingWork && (
+                              <Button type="button" variant="outline" size="sm" onClick={() => startEditWork(task)}>
                                 <Pencil className="mr-2 h-4 w-4" />
                                 Editar
                               </Button>
@@ -937,10 +1139,26 @@ export function DashboardSummary() {
                             )}
                           </div>
 
-                          <div>
-                            <p className="text-sm font-medium text-muted-foreground">Fecha</p>
-                            <p>{format(new Date(task.date), "dd/MM/yyyy HH:mm", { locale: es })}</p>
-                          </div>
+                              <div className="grid gap-3 sm:grid-cols-2">
+                                <div className="rounded-lg border border-border/50 p-3">
+                                  <p className="text-sm font-medium text-muted-foreground">Fecha</p>
+                                  <p>{format(parseDisplayDate(task.date), "dd/MM/yyyy", { locale: es })}</p>
+                                </div>
+                              <div className="rounded-lg border border-border/50 p-3">
+                                <p className="text-sm font-medium text-muted-foreground">Hora</p>
+                                <p>
+                                  {task.type === "reclamo"
+                                    ? taskAudit?.createdAt
+                                      ? format(parseDisplayDate(taskAudit.createdAt), "HH:mm", { locale: es })
+                                      : hasExplicitTime(task.date)
+                                        ? format(parseDisplayDate(task.date), "HH:mm", { locale: es })
+                                        : "Sin hora registrada"
+                                    : task.timestamp
+                                      ? format(parseDisplayDate(task.timestamp), "HH:mm", { locale: es })
+                                      : "Sin hora registrada"}
+                                  </p>
+                                </div>
+                              </div>
 
                           {task.type === "reclamo" && isEditingClaim ? (
                             <div className="grid gap-4">
@@ -1024,52 +1242,46 @@ export function DashboardSummary() {
                                 </Button>
                               </div>
                             </div>
-                          ) : (
+                          ) : task.type === "reclamo" ? (
                             <>
-                              {task.area && (
-                                <div>
-                                  <p className="text-sm font-medium text-muted-foreground">Area</p>
-                                  <p>{task.area}</p>
+                              <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-4">
+                                <p className="text-xs uppercase tracking-wide text-destructive">Reclamo</p>
+                                <div className="mt-2 space-y-2">
+                                  {task.area && (
+                                    <p className="text-sm text-muted-foreground">
+                                      Area: <span className="font-medium text-foreground">{task.area}</span>
+                                    </p>
+                                  )}
+                                  {task.claimant && (
+                                    <p className="text-sm text-muted-foreground">
+                                      Solicitante: <span className="font-medium text-foreground">{task.claimant}</span>
+                                    </p>
+                                  )}
+                                  {task.problemType && (
+                                    <p className="text-sm text-muted-foreground">
+                                      Problema: <span className="font-medium text-foreground">{task.problemType}</span>
+                                    </p>
+                                  )}
+                                  <div>
+                                    <p className="text-sm font-medium text-muted-foreground">Descripcion</p>
+                                    <p className="mt-1 whitespace-pre-wrap text-base font-medium text-foreground">
+                                      {claimDetail?.description || task.description || "-"}
+                                    </p>
+                                  </div>
                                 </div>
-                              )}
-                              {task.claimant && (
-                                <div>
-                                  <p className="text-sm font-medium text-muted-foreground">Solicitante</p>
-                                  <p>{task.claimant}</p>
-                                </div>
-                              )}
-                              {task.problemType && (
-                                <div>
-                                  <p className="text-sm font-medium text-muted-foreground">Problema</p>
-                                  <p>{task.problemType}</p>
-                                </div>
-                              )}
+                              </div>
+
+                              <div className="rounded-lg border border-chart-2/30 bg-chart-2/10 p-4">
+                                <p className="text-xs uppercase tracking-wide text-chart-2">Solucion</p>
+                                <p className="mt-2 whitespace-pre-wrap text-base font-semibold text-foreground">
+                                  {claimDetail?.solution || task.solution || "Pendiente"}
+                                </p>
+                              </div>
+
                               <div>
                                 <p className="text-sm font-medium text-muted-foreground">Responsable</p>
                                 <p>{task.userName}</p>
                               </div>
-                              <div>
-                                <p className="text-sm font-medium text-muted-foreground">Descripcion</p>
-                                <p className="whitespace-pre-wrap">
-                                  {claimDetail?.description || task.description || "-"}
-                                </p>
-                              </div>
-                              {task.type === "reclamo" && (
-                                <div>
-                                  <p className="text-sm font-medium text-muted-foreground">Solucion</p>
-                                  <p className="whitespace-pre-wrap">
-                                    {claimDetail?.solution || task.solution || "Pendiente"}
-                                  </p>
-                                </div>
-                              )}
-                              {task.type === "trabajo" && (
-                                <div>
-                                  <p className="text-sm font-medium text-muted-foreground">Solucion</p>
-                                  <p className="whitespace-pre-wrap">
-                                    {task.solution || "Sin solucion registrada"}
-                                  </p>
-                                </div>
-                              )}
                               {task.type === "reclamo" && task.pending && (
                                 <div className="space-y-2 rounded-lg border border-border p-3">
                                   <p className="text-sm font-medium text-muted-foreground">Resolver pendiente</p>
@@ -1111,41 +1323,173 @@ export function DashboardSummary() {
                                 </div>
                               )}
                             </>
+                          ) : task.type === "trabajo" && isEditingWork ? (
+                            <div className="grid gap-4">
+                              <div className="grid gap-3 sm:grid-cols-2">
+                                <Input
+                                  value={workEditData?.title ?? ""}
+                                  onKeyDown={(event) => event.stopPropagation()}
+                                  onChange={(event) =>
+                                    setWorkEditData((prev) => ({
+                                      ...(prev ?? {
+                                        title: task.title,
+                                        area: task.area ?? "",
+                                        description: task.description,
+                                        solution: task.solution ?? "",
+                                      }),
+                                      title: event.target.value,
+                                    }))
+                                  }
+                                  placeholder="Titulo"
+                                />
+                                <Input
+                                  value={workEditData?.area ?? ""}
+                                  onKeyDown={(event) => event.stopPropagation()}
+                                  onChange={(event) =>
+                                    setWorkEditData((prev) => ({
+                                      ...(prev ?? {
+                                        title: task.title,
+                                        area: task.area ?? "",
+                                        description: task.description,
+                                        solution: task.solution ?? "",
+                                      }),
+                                      area: event.target.value,
+                                    }))
+                                  }
+                                  placeholder="Area"
+                                />
+                              </div>
+                              <Textarea
+                                value={workEditData?.description ?? ""}
+                                onKeyDown={(event) => event.stopPropagation()}
+                                onChange={(event) =>
+                                  setWorkEditData((prev) => ({
+                                    ...(prev ?? {
+                                      title: task.title,
+                                      area: task.area ?? "",
+                                      description: task.description,
+                                      solution: task.solution ?? "",
+                                    }),
+                                    description: event.target.value,
+                                  }))
+                                }
+                                placeholder="Descripcion"
+                                className="min-h-[120px]"
+                              />
+                              <Textarea
+                                value={workEditData?.solution ?? ""}
+                                onKeyDown={(event) => event.stopPropagation()}
+                                onChange={(event) =>
+                                  setWorkEditData((prev) => ({
+                                    ...(prev ?? {
+                                      title: task.title,
+                                      area: task.area ?? "",
+                                      description: task.description,
+                                      solution: task.solution ?? "",
+                                    }),
+                                    solution: event.target.value,
+                                  }))
+                                }
+                                placeholder="Solucion"
+                                className="min-h-[90px]"
+                              />
+                              <div className="flex justify-end gap-2">
+                                <Button type="button" variant="outline" onClick={() => setIsEditingWork(false)}>
+                                  Cancelar
+                                </Button>
+                                <Button type="button" onClick={() => saveEditedWork(task)} disabled={isSavingWork}>
+                                  <Save className="mr-2 h-4 w-4" />
+                                  {isSavingWork ? "Guardando..." : "Guardar cambios"}
+                                </Button>
+                              </div>
+                            </div>
+                          ) : task.type === "trabajo" ? (
+                            <>
+                              <div className="rounded-lg border border-chart-2/30 bg-chart-2/10 p-4">
+                                <p className="text-xs uppercase tracking-wide text-chart-2">Trabajo realizado</p>
+                                <div className="mt-2 space-y-2">
+                                  {task.area && (
+                                    <p className="text-sm text-muted-foreground">
+                                      Area: <span className="font-medium text-foreground">{task.area}</span>
+                                    </p>
+                                  )}
+                                  <div>
+                                    <p className="text-sm font-medium text-muted-foreground">Descripcion</p>
+                                    <p className="mt-1 whitespace-pre-wrap text-base font-medium text-foreground">
+                                      {task.description || "-"}
+                                    </p>
+                                  </div>
+                                  <div>
+                                    <p className="text-sm font-medium text-muted-foreground">Solucion</p>
+                                    <p className="mt-1 whitespace-pre-wrap text-base font-medium text-foreground">
+                                      {task.solution || "Sin solucion registrada"}
+                                    </p>
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div>
+                                <p className="text-sm font-medium text-muted-foreground">Responsable</p>
+                                <p>{task.userName}</p>
+                              </div>
+                            </>
+                          ) : (
+                            <>
+                              <div className="rounded-lg border border-chart-1/30 bg-chart-1/10 p-4">
+                                <p className="text-xs uppercase tracking-wide text-chart-1">Tarea recurrente</p>
+                                <div className="mt-2">
+                                  <p className="text-sm font-medium text-muted-foreground">Descripcion</p>
+                                  <p className="mt-1 whitespace-pre-wrap text-base font-medium text-foreground">
+                                    {task.description || "-"}
+                                  </p>
+                                </div>
+                              </div>
+
+                              <div>
+                                <p className="text-sm font-medium text-muted-foreground">Responsable</p>
+                                <p>{task.userName}</p>
+                              </div>
+                            </>
                           )}
 
                           {task.type === "reclamo" && (
-                            <div className="rounded-lg border border-border/50 bg-muted/20 p-3 text-sm">
-                              <div className="flex items-center gap-2 text-muted-foreground">
-                                <History className="h-4 w-4" />
-                                Registro del reclamo
-                              </div>
-                              <div className="mt-2 grid gap-1 text-sm">
-                                <p>Creado por: {task.userName}</p>
+                              <div className="rounded-lg border border-border/50 bg-muted/20 p-3 text-sm">
+                                <div className="flex items-center gap-2 text-muted-foreground">
+                                  <History className="h-4 w-4" />
+                                  Registro del reclamo
+                                </div>
+                                <div className="mt-2 grid gap-1 text-sm">
+                                <p>Creado por: {taskAudit?.createdBy ?? task.userName}</p>
                                 <p>
-                                  Editado por: {claimAudit[String(task.id)]?.editedBy ?? "Sin registro todavia"}
+                                  Hora de reclamo:{" "}
+                                  {taskAudit?.createdAt
+                                    ? format(parseDisplayDate(taskAudit.createdAt), "dd/MM/yyyy HH:mm", { locale: es })
+                                    : hasExplicitTime(task.date)
+                                      ? format(parseDisplayDate(task.date), "dd/MM/yyyy HH:mm", { locale: es })
+                                      : "Sin hora registrada"}
                                 </p>
+                                <p>Editado por: {taskAudit?.editedBy ?? "Sin registro todavia"}</p>
                                 <p>
                                   Horas de edicion:{" "}
-                                  {(claimAudit[String(task.id)]?.editHistory ?? []).length
-                                    ? (claimAudit[String(task.id)]?.editHistory ?? [])
+                                  {(taskAudit?.editHistory ?? []).length
+                                    ? (taskAudit?.editHistory ?? [])
                                         .map((entry) =>
-                                          `${format(new Date(entry.at), "dd/MM/yyyy HH:mm", { locale: es })} - ${entry.by}`
+                                          `${format(parseDisplayDate(entry.at), "dd/MM/yyyy HH:mm", { locale: es })} - ${entry.by}`
                                         )
                                         .join(" | ")
                                     : "Sin ediciones registradas"}
                                 </p>
                                 <p>
-                                  Cantidad de ediciones:{" "}
-                                  {(claimAudit[String(task.id)]?.editHistory ?? []).length}
+                                  Cantidad de ediciones: {(taskAudit?.editHistory ?? []).length ?? 0}
                                 </p>
                                 <p>
                                   Resuelto por:{" "}
-                                  {claimAudit[String(task.id)]?.resolvedBy ?? (task.pending ? "Pendiente" : "Sin registro todavia")}
+                                  {taskAudit?.resolvedBy ?? (task.pending ? "Pendiente" : "Sin registro todavia")}
                                 </p>
                                 <p>
                                   Hora de resolucion:{" "}
-                                  {claimAudit[String(task.id)]?.resolvedAt
-                                    ? format(new Date(claimAudit[String(task.id)].resolvedAt!), "dd/MM/yyyy HH:mm", { locale: es })
+                                  {taskAudit?.resolvedAt
+                                    ? format(parseDisplayDate(taskAudit.resolvedAt), "dd/MM/yyyy HH:mm", { locale: es })
                                     : task.pending
                                       ? "Pendiente"
                                       : "Sin registro todavia"}

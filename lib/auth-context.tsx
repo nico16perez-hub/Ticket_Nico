@@ -5,6 +5,7 @@ import {
   useContext,
   useState,
   useCallback,
+  useEffect,
   type ReactNode,
 } from "react"
 import CryptoJS from "crypto-js"
@@ -26,8 +27,8 @@ interface AuthContextValue {
 const AuthContext = createContext<AuthContextValue | null>(null)
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<User | null>(() => getStoredUser())
-  const [loading, setLoading] = useState(false)
+  const [user, setUser] = useState<User | null>(null)
+  const [loading, setLoading] = useState(true)
 
   const SECRET_KEY = process.env.NEXT_PUBLIC_CRYPTO_SECRET!
 
@@ -39,9 +40,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return encrypted;
   }, [SECRET_KEY])
 
+  useEffect(() => {
+    queueMicrotask(() => {
+      setUser(getStoredUser())
+      setLoading(false)
+    })
+  }, [])
+
   const login = useCallback(
     async (credentials: LoginCredentials): Promise<{ success: boolean; error?: string }> => {
       try {
+        setLoading(true)
         const encryptedPassword = encryptPassword(credentials.password)
 
         const res = await fetch(`${API_URL}/api/auth/login`, {
@@ -72,8 +81,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
         storeUser(loggedUser, credentials.remember)
         setUser(loggedUser)
+        setLoading(false)
         return { success: true }
       } catch {
+        setLoading(false)
         return { success: false, error: "Error de conexion con el servidor" }
       }
     },

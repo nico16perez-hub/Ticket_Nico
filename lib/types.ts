@@ -17,7 +17,7 @@ export interface LoginCredentials {
 
 // ── Tareas Recurrentes (templates del usuario) ──────────────
 export interface RecurringTask {
-  id: number
+  id: string | number
   userId: number
   title: string
   description: string
@@ -25,7 +25,7 @@ export interface RecurringTask {
 
 // ── Tarea del dia (instancia activada) ──────────────────────
 export interface DailyTask {
-  id: number
+  id: string | number
   userId: number
   userName: string
   date: string
@@ -52,7 +52,7 @@ export interface Claim {
 
 // ── Trabajo realizado (sin reclamo) ─────────────────────────
 export interface CompletedWork {
-  id: number
+  id: string | number
   userId: number
   userName: string
   date: string
@@ -60,6 +60,8 @@ export interface CompletedWork {
   area: string
   description: string
   solution?: string
+  editedBy?: string
+  editedAt?: string
 }
 
 export interface DashboardRecurringTask {
