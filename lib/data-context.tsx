@@ -39,6 +39,7 @@ interface DataContextValue {
   // Tareas del dia
   dailyTasks: DailyTask[]
   activateRecurringTask: (task: RecurringTask) => Promise<boolean>
+  deactivateRecurringTask: (task: RecurringTask) => Promise<boolean>
   isRecurringActivatedToday: (taskId: string | number) => boolean
   loadingDaily: boolean
 
@@ -275,7 +276,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
       const { task: created, error } = await api.createRecurringTaskVerbose(user.id, taskData)
       if (created) {
         await fetchRecurring()
-        toast.success(existingTask ? "Tarea recurrente aceptada para tu usuario" : "Tarea recurrente guardada")
+        toast.success(existingTask ? "Tarea recurrente agregada para tu usuario" : "Tarea recurrente guardada")
         return true
       }
 
@@ -406,6 +407,36 @@ export function DataProvider({ children }: { children: ReactNode }) {
     [acceptRecurringTask, isRecurringTaskAccepted, user, todayStr]
   )
 
+  const deactivateRecurringTask = useCallback(
+    async (task: RecurringTask) => {
+      if (!user) {
+        toast.error("No se pudo identificar el usuario")
+        return false
+      }
+
+      const signature = buildRecurringSignature(task)
+      const activatedTask = dailyTasks.find(
+        (item) =>
+          item.userId === user.id &&
+          item.type === "recurrente" &&
+          (item.date === todayStr || item.date.startsWith(`${todayStr}T`)) &&
+          buildRecurringSignature(item) === signature
+      )
+
+      if (!activatedTask) return true
+
+      const deleted = await api.deleteDailyTask(activatedTask.id)
+      if (!deleted) {
+        toast.error("No se pudo quitar la tarea del dia")
+        return false
+      }
+
+      setDailyTasks((prev) => prev.filter((item) => item.id !== activatedTask.id))
+      return true
+    },
+    [dailyTasks, todayStr, user]
+  )
+
   const isRecurringActivatedToday = useCallback(
     (taskId: string | number) => {
       const task = allRecurringTasks.find((t) => t.id === taskId)
@@ -530,6 +561,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
         loadingRecurring,
         dailyTasks,
         activateRecurringTask,
+        deactivateRecurringTask,
         isRecurringActivatedToday,
         loadingDaily,
         claims,

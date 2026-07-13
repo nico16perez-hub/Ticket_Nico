@@ -33,6 +33,7 @@ export interface DailyTask {
   title: string
   description: string
   area?: string
+  timestamp?: string
 }
 
 // ── Reclamo / Ticket ────────────────────────────────────────
@@ -106,13 +107,14 @@ export interface CompletedWorkFormValues {
 export type ReportPeriod = "today" | "week" | "month"
 
 export interface ReportEntry {
-  id: number
+  id: string | number
   date: string
   userName: string
   type: "recurrente" | "reclamo" | "trabajo"
   title: string
   area: string
   description: string
+  solution?: string | null
 }
 
 export interface CountEntry {

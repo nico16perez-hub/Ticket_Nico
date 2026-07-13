@@ -237,6 +237,15 @@ export async function addDailyTaskVerbose(
 }
 
 // ── Reclamos ────────────────────────────────────────────────
+export async function deleteDailyTask(id: string | number): Promise<boolean> {
+  try {
+    await authFetch(`/daily-tasks/${id}`, { method: "DELETE" })
+    return true
+  } catch {
+    return false
+  }
+}
+
 export async function getClaims(userId: number, date?: string): Promise<Claim[]> {
   try {
     const query = date ? `?date=${date}` : ""

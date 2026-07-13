@@ -66,7 +66,7 @@ const TYPE_CONFIG = {
   },
   reclamo: {
     label: "Reclamo",
-    className: "bg-destructive/15 text-destructive border-destructive/30",
+    className: "bg-amber-500/15 text-amber-600 border-amber-500/30",
     icon: AlertTriangle,
   },
   trabajo: {
@@ -150,32 +150,6 @@ function uniqueRecurringDailyTasks(tasks: SummaryTask[]) {
   return unique
 }
 
-type RecurringTaskOwner = {
-  id: number
-  name: string
-  surname: string
-  area?: string
-}
-
-async function loadAcceptedRecurringTasksForUser(
-  selectedDate: string,
-  owner: RecurringTaskOwner
-): Promise<SummaryTask[]> {
-  const tasks = await api.getRecurringTasks(owner.id)
-  const userName = `${owner.name} ${owner.surname}`.trim()
-
-  return tasks.map((task) => ({
-    id: `recurrente-${owner.id}-${task.id}`,
-    userId: owner.id,
-    type: "recurrente",
-    title: task.title,
-    description: task.description,
-    area: owner.area ?? "Sistemas",
-    userName,
-    date: selectedDate,
-  }))
-}
-
 function buildClaimFormValues(claim: Partial<SummaryTask & Claim>): ClaimFormValues {
   return {
     title: claim.title ?? "",
@@ -206,7 +180,6 @@ export function DashboardSummary() {
   const [selectedDate, setSelectedDate] = useState(today)
   const [dashboard, setDashboard] = useState<SharedDashboardData | null>(null)
   const [dailyTasks, setDailyTasks] = useState<SummaryTask[]>([])
-  const [acceptedRecurringTasks, setAcceptedRecurringTasks] = useState<SummaryTask[]>([])
   const [loading, setLoading] = useState(false)
   const [activeFilter, setActiveFilter] = useState<FilterType>("todas")
   const [search, setSearch] = useState("")
@@ -239,16 +212,9 @@ export function DashboardSummary() {
             claims: await api.getClaims(user.id, selectedDate),
             completedWorks: await api.getCompletedWorks(user.id, selectedDate),
           }
-      const acceptedRecurring = await loadAcceptedRecurringTasksForUser(selectedDate, {
-        id: user.id,
-        name: user.name,
-        surname: user.surname,
-        area: user.area,
-      })
       if (!cancelled) {
         setDashboard(data)
         setDailyTasks(data.dailyTasks ?? [])
-        setAcceptedRecurringTasks(acceptedRecurring)
         setLoading(false)
       }
     }
@@ -270,8 +236,23 @@ export function DashboardSummary() {
   }, [user])
 
   const recurrentTasks = useMemo<SummaryTask[]>(
-    () => uniqueRecurringDailyTasks(acceptedRecurringTasks),
-    [acceptedRecurringTasks]
+    () =>
+      uniqueRecurringDailyTasks(
+        dailyTasks
+          .filter((task) => task.type === "recurrente" && matchesSelectedDate(task.date, selectedDate))
+          .map((task) => ({
+            id: task.id,
+            userId: task.userId,
+            type: "recurrente",
+            title: task.title,
+            description: task.description,
+            area: task.area,
+            userName: task.userName,
+            date: task.date,
+            timestamp: task.timestamp,
+          }))
+      ),
+    [dailyTasks, selectedDate]
   )
 
   const allClaimTasks = useMemo<SummaryTask[]>(
@@ -297,7 +278,7 @@ export function DashboardSummary() {
   )
 
   const claimTasks = useMemo(
-    () => allClaimTasks.filter((task) => task.pending),
+    () => allClaimTasks,
     [allClaimTasks]
   )
 
@@ -305,6 +286,17 @@ export function DashboardSummary() {
     () =>
       (dashboard?.completedWorks ?? [])
         .filter((work) => matchesSelectedDate(work.date, selectedDate))
+        .filter(
+          (work) =>
+            !dashboard?.claims.some(
+              (claim) =>
+                matchesSelectedDate(claim.date, selectedDate) &&
+                !!claim.solution?.trim() &&
+                claim.title === work.title &&
+                claim.area === work.area &&
+                claim.description === work.description
+            )
+        )
         .map((work) => {
           const meta = workMeta[String(work.id)]
           const matchedClaim = dashboard?.claims.find(
@@ -338,8 +330,8 @@ export function DashboardSummary() {
   )
 
   const pendingTasks = useMemo(
-    () => claimTasks,
-    [claimTasks]
+    () => allClaimTasks.filter((task) => task.pending),
+    [allClaimTasks]
   )
 
   const activityTasks = useMemo<ActivityTask[]>(
@@ -376,6 +368,26 @@ export function DashboardSummary() {
       }),
     [claimAudit, dayTasks]
   )
+
+  const getActivityDateLabel = (task: ActivityTask) => {
+    const audit = claimAudit[String(task.id)]
+    const timestamp =
+      task.type === "reclamo"
+        ? task.pending
+          ? audit?.createdAt
+          : audit?.resolvedAt ?? audit?.createdAt
+        : task.timestamp ?? task.editedAt
+
+    if (timestamp) {
+      return format(parseDisplayDate(timestamp), "dd/MM/yyyy HH:mm", { locale: es })
+    }
+
+    if (hasExplicitTime(task.date)) {
+      return format(parseDisplayDate(task.date), "dd/MM/yyyy HH:mm", { locale: es })
+    }
+
+    return format(parseDisplayDate(task.date), "dd/MM/yyyy", { locale: es })
+  }
 
   const filteredTasks = useMemo(() => {
     const normalizedSearch = search.trim().toLowerCase()
@@ -503,20 +515,6 @@ export function DashboardSummary() {
     }
     const updated = updateResult.claim
 
-    const { work: workCreated, error: workError } = await api.createCompletedWorkVerbose(user?.id ?? claim.userId, currentUserName, {
-      title: updated.title,
-      area: updated.area,
-      description: updated.description,
-      solution,
-    })
-
-    if (workCreated && user) {
-      saveCompletedWorkMeta(user.id, workCreated.id, {
-        solution,
-        timestamp: new Date().toISOString(),
-      })
-    }
-
     const resolvedAt = new Date().toISOString()
     const currentAudit = claimAudit[String(updated.id)] ?? {}
     const nextAudit: ClaimAudit = {
@@ -544,12 +542,6 @@ export function DashboardSummary() {
         ? {
             ...prev,
             claims: prev.claims.map((item) => (sameId(item.id, task.id) ? updated : item)),
-            completedWorks: workCreated
-              ? [
-                  ...prev.completedWorks.filter((item) => !sameId(item.id, workCreated.id)),
-                  workCreated,
-                ]
-              : prev.completedWorks,
           }
         : prev
     )
@@ -566,11 +558,7 @@ export function DashboardSummary() {
     }
 
     setOpenTaskId(null)
-    if (workCreated) {
-      toast.success("Reclamo resuelto y movido a trabajos realizados")
-    } else {
-      toast.warning(workError ?? "Reclamo resuelto, pero no se pudo registrar en trabajos realizados")
-    }
+    toast.success("Reclamo marcado como solucionado")
   }
 
   const saveEditedClaim = async (task: SummaryTask) => {
@@ -639,10 +627,11 @@ export function DashboardSummary() {
   }
 
   const saveEditedWork = async (task: SummaryTask) => {
-    const data = workEditData ?? {
+    const data: CompletedWorkFormValues = {
       title: task.title,
       area: task.area ?? "",
       description: task.description,
+      ...workEditData,
       solution: task.solution ?? "",
     }
 
@@ -707,16 +696,16 @@ export function DashboardSummary() {
       title: "Reclamos",
       value: claimTasks.length,
       icon: AlertTriangle,
-      color: "text-destructive",
-      bg: "bg-destructive/10",
+      color: "text-amber-600",
+      bg: "bg-amber-500/10",
     },
     {
       key: "pendientes" as const,
       title: "Pendientes",
       value: pendingTasks.length,
       icon: ClipboardList,
-      color: "text-amber-600",
-      bg: "bg-amber-500/10",
+      color: "text-destructive",
+      bg: "bg-destructive/10",
     },
     {
       key: "trabajo" as const,
@@ -844,7 +833,7 @@ export function DashboardSummary() {
                             <span className="font-medium text-popover-foreground">{task.title}</span>
                             <Badge
                               variant="outline"
-                              className="border-amber-500/30 bg-amber-500/10 text-[11px] text-amber-700"
+                              className="border-destructive/30 bg-destructive/10 text-[11px] text-destructive"
                             >
                               Pendiente
                             </Badge>
@@ -900,7 +889,7 @@ export function DashboardSummary() {
                             </Badge>
                           </div>
                           <span className="mt-1 block text-xs text-muted-foreground">
-                            {format(parseDisplayDate(task.date), "dd/MM/yyyy HH:mm", { locale: es })}
+                            {getActivityDateLabel(task)}
                           </span>
                           <span className="mt-2 block text-xs text-muted-foreground/80">
                             {task.type === "reclamo" ? task.metaLine : `Responsable: ${task.userName}`}
@@ -1038,7 +1027,7 @@ export function DashboardSummary() {
                         task.type === "recurrente"
                           ? "text-chart-1"
                           : task.type === "reclamo"
-                            ? "text-destructive"
+                            ? "text-amber-600"
                             : "text-chart-2"
                       }`}
                     />
@@ -1053,7 +1042,7 @@ export function DashboardSummary() {
                         {task.pending && (
                           <Badge
                             variant="outline"
-                            className="border-amber-500/30 bg-amber-500/10 text-xs text-amber-700"
+                            className="border-destructive/30 bg-destructive/10 text-xs text-destructive"
                           >
                             Pendiente
                           </Badge>
@@ -1132,7 +1121,7 @@ export function DashboardSummary() {
                             {task.pending && (
                               <Badge
                                 variant="outline"
-                                className="border-amber-500/30 bg-amber-500/10 text-amber-700"
+                                className="border-destructive/30 bg-destructive/10 text-destructive"
                               >
                                 Pendiente
                               </Badge>
@@ -1244,8 +1233,8 @@ export function DashboardSummary() {
                             </div>
                           ) : task.type === "reclamo" ? (
                             <>
-                              <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-4">
-                                <p className="text-xs uppercase tracking-wide text-destructive">Reclamo</p>
+                              <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-4">
+                                <p className="text-xs uppercase tracking-wide text-amber-600">Reclamo</p>
                                 <div className="mt-2 space-y-2">
                                   {task.area && (
                                     <p className="text-sm text-muted-foreground">
@@ -1376,23 +1365,6 @@ export function DashboardSummary() {
                                 placeholder="Descripcion"
                                 className="min-h-[120px]"
                               />
-                              <Textarea
-                                value={workEditData?.solution ?? ""}
-                                onKeyDown={(event) => event.stopPropagation()}
-                                onChange={(event) =>
-                                  setWorkEditData((prev) => ({
-                                    ...(prev ?? {
-                                      title: task.title,
-                                      area: task.area ?? "",
-                                      description: task.description,
-                                      solution: task.solution ?? "",
-                                    }),
-                                    solution: event.target.value,
-                                  }))
-                                }
-                                placeholder="Solucion"
-                                className="min-h-[90px]"
-                              />
                               <div className="flex justify-end gap-2">
                                 <Button type="button" variant="outline" onClick={() => setIsEditingWork(false)}>
                                   Cancelar
@@ -1417,12 +1389,6 @@ export function DashboardSummary() {
                                     <p className="text-sm font-medium text-muted-foreground">Descripcion</p>
                                     <p className="mt-1 whitespace-pre-wrap text-base font-medium text-foreground">
                                       {task.description || "-"}
-                                    </p>
-                                  </div>
-                                  <div>
-                                    <p className="text-sm font-medium text-muted-foreground">Solucion</p>
-                                    <p className="mt-1 whitespace-pre-wrap text-base font-medium text-foreground">
-                                      {task.solution || "Sin solucion registrada"}
                                     </p>
                                   </div>
                                 </div>
@@ -1493,6 +1459,33 @@ export function DashboardSummary() {
                                     : task.pending
                                       ? "Pendiente"
                                       : "Sin registro todavia"}
+                                </p>
+                              </div>
+                            </div>
+                          )}
+
+                          {task.type === "trabajo" && (
+                            <div className="rounded-lg border border-border/50 bg-muted/20 p-3 text-sm">
+                              <div className="flex items-center gap-2 text-muted-foreground">
+                                <History className="h-4 w-4" />
+                                Log del trabajo
+                              </div>
+                              <div className="mt-2 grid gap-1 text-sm">
+                                <p>Registrado por: {task.userName}</p>
+                                <p>
+                                  Hora de registro:{" "}
+                                  {task.timestamp
+                                    ? format(parseDisplayDate(task.timestamp), "dd/MM/yyyy HH:mm", { locale: es })
+                                    : hasExplicitTime(task.date)
+                                      ? format(parseDisplayDate(task.date), "dd/MM/yyyy HH:mm", { locale: es })
+                                      : "Sin hora registrada"}
+                                </p>
+                                <p>Editado por: {task.editedBy ?? "Sin registro todavia"}</p>
+                                <p>
+                                  Hora de edicion:{" "}
+                                  {task.editedAt
+                                    ? format(parseDisplayDate(task.editedAt), "dd/MM/yyyy HH:mm", { locale: es })
+                                    : "Sin ediciones registradas"}
                                 </p>
                               </div>
                             </div>

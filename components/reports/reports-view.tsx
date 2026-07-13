@@ -9,6 +9,14 @@ import * as api from "@/lib/api"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import {
   Dialog,
   DialogContent,
@@ -37,7 +45,8 @@ import {
 } from "date-fns"
 import { es } from "date-fns/locale"
 import { parseDisplayDate } from "@/lib/date-utils"
-import type { CountEntry, ReportPeriod, StatisticsSummary } from "@/lib/types"
+import type { CountEntry, ReportEntry, ReportPeriod, StatisticsSummary } from "@/lib/types"
+import { cn } from "@/lib/utils"
 
 const TYPE_CONFIG = {
   recurrente: {
@@ -57,6 +66,8 @@ const TYPE_CONFIG = {
   },
 } as const
 
+const ALL_FILTER_VALUE = "todos"
+
 type ReportTask = {
   id: string | number
   type: "recurrente" | "reclamo" | "trabajo"
@@ -65,6 +76,15 @@ type ReportTask = {
   title: string
   area?: string
   description: string
+  solution?: string | null
+}
+
+type TaskTypeFilter = ReportTask["type"] | typeof ALL_FILTER_VALUE
+
+type ChartEntry = {
+  label: string
+  count: number
+  className?: string
 }
 
 function getDateRange(period: ReportPeriod): { startDate: string; endDate: string } {
@@ -92,6 +112,57 @@ function normalizeEntry(entry: CountEntry) {
   const label = entry.label ?? entry.name ?? entry.key ?? "Sin etiqueta"
   const count = entry.count ?? entry.total ?? entry.value ?? 0
   return { label, count }
+}
+
+function uniqueOptions(values: Array<string | undefined>) {
+  return Array.from(
+    new Set(values.map((value) => value?.trim()).filter((value): value is string => !!value))
+  ).sort((a, b) => a.localeCompare(b, "es"))
+}
+
+function isReportTaskType(value: string): value is ReportTask["type"] {
+  return value === "recurrente" || value === "reclamo" || value === "trabajo"
+}
+
+function mapReportEntry(entry: ReportEntry): ReportTask | null {
+  if (!isReportTaskType(entry.type)) return null
+
+  return {
+    id: entry.id,
+    type: entry.type,
+    date: entry.date,
+    userName: entry.userName,
+    title: entry.title,
+    area: entry.area,
+    description: entry.description,
+    solution: entry.solution,
+  }
+}
+
+function getTypeChart(tasks: ReportTask[]): ChartEntry[] {
+  return (["recurrente", "reclamo", "trabajo"] as const).map((type) => ({
+    label: TYPE_CONFIG[type].label,
+    count: tasks.filter((task) => task.type === type).length,
+    className:
+      type === "recurrente"
+        ? "bg-chart-1"
+        : type === "reclamo"
+          ? "bg-destructive"
+          : "bg-chart-2",
+  }))
+}
+
+function getAreaChart(tasks: ReportTask[]): ChartEntry[] {
+  const counts = tasks.reduce<Record<string, number>>((acc, task) => {
+    const area = task.area?.trim() || "Sin area"
+    acc[area] = (acc[area] ?? 0) + 1
+    return acc
+  }, {})
+
+  return Object.entries(counts)
+    .map(([label, count]) => ({ label, count, className: "bg-primary" }))
+    .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, "es"))
+    .slice(0, 6)
 }
 
 function StatsList({ title, entries }: { title: string; entries: CountEntry[] }) {
@@ -126,17 +197,58 @@ function StatsList({ title, entries }: { title: string; entries: CountEntry[] })
   )
 }
 
+function ReportChart({ title, entries }: { title: string; entries: ChartEntry[] }) {
+  const max = Math.max(...entries.map((entry) => entry.count), 0)
+  const visibleEntries = entries.filter((entry) => entry.count > 0)
+
+  return (
+    <Card className="border-border/50 pdf-avoid-break">
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base text-card-foreground">{title}</CardTitle>
+      </CardHeader>
+      <CardContent>
+        {visibleEntries.length === 0 ? (
+          <p className="text-sm text-muted-foreground">Sin datos para graficar</p>
+        ) : (
+          <div className="flex flex-col gap-3">
+            {visibleEntries.map((entry) => (
+              <div key={entry.label} className="grid gap-1.5">
+                <div className="flex items-center justify-between gap-3 text-sm">
+                  <span className="truncate text-card-foreground">{entry.label}</span>
+                  <span className="font-medium text-muted-foreground">{entry.count}</span>
+                </div>
+                <div className="h-2.5 overflow-hidden rounded-full bg-muted">
+                  <div
+                    className={cn("h-full rounded-full", entry.className ?? "bg-primary")}
+                    style={{ width: `${Math.max((entry.count / max) * 100, 8)}%` }}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
 export function ReportsView() {
   const { user } = useAuth()
   const { dailyTasks, claims, completedWorks } = useData()
   const router = useRouter()
   const [period, setPeriod] = useState<ReportPeriod>("today")
+  const [search, setSearch] = useState("")
+  const [typeFilter, setTypeFilter] = useState<TaskTypeFilter>(ALL_FILTER_VALUE)
+  const [areaFilter, setAreaFilter] = useState(ALL_FILTER_VALUE)
+  const [userFilter, setUserFilter] = useState(ALL_FILTER_VALUE)
+  const [reportTasks, setReportTasks] = useState<ReportTask[]>([])
+  const [loadingReport, setLoadingReport] = useState(false)
   const [statistics, setStatistics] = useState<StatisticsSummary | null>(null)
   const [loadingStatistics, setLoadingStatistics] = useState(false)
   const isAdminUser = isAdmin(user)
 
   const { startDate, endDate } = useMemo(() => getDateRange(period), [period])
-  const filteredTasks = useMemo(() => {
+  const fallbackPeriodTasks = useMemo(() => {
     const now = new Date()
     const allTasks: ReportTask[] = [
       ...dailyTasks.filter((task) => task.type === "recurrente"),
@@ -148,6 +260,7 @@ export function ReportsView() {
         title: claim.title,
         area: claim.area,
         description: claim.description,
+        solution: claim.solution,
       })),
       ...completedWorks.map((work) => ({
         id: work.id,
@@ -157,6 +270,7 @@ export function ReportsView() {
         title: work.title,
         area: work.area,
         description: work.description,
+        solution: work.solution,
       })),
     ]
 
@@ -181,6 +295,58 @@ export function ReportsView() {
     })
   }, [dailyTasks, claims, completedWorks, period])
 
+  const periodTasks = reportTasks.length > 0 ? reportTasks : fallbackPeriodTasks
+
+  const areaOptions = useMemo(() => uniqueOptions(periodTasks.map((task) => task.area)), [periodTasks])
+  const userOptions = useMemo(() => uniqueOptions(periodTasks.map((task) => task.userName)), [periodTasks])
+
+  const filteredTasks = useMemo(() => {
+    const normalizedSearch = search.trim().toLowerCase()
+
+    return periodTasks.filter((task) => {
+      if (typeFilter !== ALL_FILTER_VALUE && task.type !== typeFilter) return false
+      if (areaFilter !== ALL_FILTER_VALUE && (task.area?.trim() || "Sin area") !== areaFilter) return false
+      if (userFilter !== ALL_FILTER_VALUE && task.userName !== userFilter) return false
+      if (!normalizedSearch) return true
+
+      return [
+        task.title,
+        task.description,
+        task.area,
+        task.userName,
+        task.solution,
+        TYPE_CONFIG[task.type].label,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase()
+        .includes(normalizedSearch)
+    })
+  }, [areaFilter, periodTasks, search, typeFilter, userFilter])
+
+  const typeFilterBaseTasks = useMemo(() => {
+    const normalizedSearch = search.trim().toLowerCase()
+
+    return periodTasks.filter((task) => {
+      if (areaFilter !== ALL_FILTER_VALUE && (task.area?.trim() || "Sin area") !== areaFilter) return false
+      if (userFilter !== ALL_FILTER_VALUE && task.userName !== userFilter) return false
+      if (!normalizedSearch) return true
+
+      return [
+        task.title,
+        task.description,
+        task.area,
+        task.userName,
+        task.solution,
+        TYPE_CONFIG[task.type].label,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase()
+        .includes(normalizedSearch)
+    })
+  }, [areaFilter, periodTasks, search, userFilter])
+
   useEffect(() => {
     if (!isAdminUser) {
       router.replace("/dashboard")
@@ -189,27 +355,58 @@ export function ReportsView() {
 
     let mounted = true
 
-    const loadStatistics = async () => {
+    const loadReportData = async () => {
       setLoadingStatistics(true)
-      const data = await api.getStatisticsSummary(startDate, endDate)
+      setLoadingReport(true)
+      const [entries, data] = await Promise.all([
+        api.getReport(period),
+        api.getStatisticsSummary(startDate, endDate),
+      ])
+
       if (mounted) {
+        setReportTasks(entries.map(mapReportEntry).filter((task): task is ReportTask => task !== null))
         setStatistics(data)
         setLoadingStatistics(false)
+        setLoadingReport(false)
       }
     }
 
-    void loadStatistics()
+    void loadReportData()
 
     return () => {
       mounted = false
     }
-  }, [endDate, isAdminUser, router, startDate])
+  }, [endDate, isAdminUser, period, router, startDate])
 
-  const stats = {
-    total: filteredTasks.length,
-    recurrente: filteredTasks.filter((t) => t.type === "recurrente").length,
-    reclamo: filteredTasks.filter((t) => t.type === "reclamo").length,
-    trabajo: filteredTasks.filter((t) => t.type === "trabajo").length,
+  useEffect(() => {
+    if (areaFilter !== ALL_FILTER_VALUE && !areaOptions.includes(areaFilter)) {
+      setAreaFilter(ALL_FILTER_VALUE)
+    }
+
+    if (userFilter !== ALL_FILTER_VALUE && !userOptions.includes(userFilter)) {
+      setUserFilter(ALL_FILTER_VALUE)
+    }
+  }, [areaFilter, areaOptions, userFilter, userOptions])
+
+  const typeStats = {
+    total: typeFilterBaseTasks.length,
+    recurrente: typeFilterBaseTasks.filter((t) => t.type === "recurrente").length,
+    reclamo: typeFilterBaseTasks.filter((t) => t.type === "reclamo").length,
+    trabajo: typeFilterBaseTasks.filter((t) => t.type === "trabajo").length,
+  }
+  const chartByType = useMemo(() => getTypeChart(filteredTasks), [filteredTasks])
+  const chartByArea = useMemo(() => getAreaChart(filteredTasks), [filteredTasks])
+  const hasActiveFilters =
+    search.trim() ||
+    typeFilter !== ALL_FILTER_VALUE ||
+    areaFilter !== ALL_FILTER_VALUE ||
+    userFilter !== ALL_FILTER_VALUE
+
+  const clearFilters = () => {
+    setSearch("")
+    setTypeFilter(ALL_FILTER_VALUE)
+    setAreaFilter(ALL_FILTER_VALUE)
+    setUserFilter(ALL_FILTER_VALUE)
   }
 
   if (!isAdminUser) {
@@ -247,27 +444,122 @@ export function ReportsView() {
           </Button>
         </div>
 
+        <Card className="no-print border-border/50">
+          <CardContent className="p-4">
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(220px,1fr)_180px_180px_180px_auto]">
+              <div className="relative">
+                <BarChart3 className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                  placeholder="Buscar por titulo, descripcion, area o usuario"
+                  className="pl-9 text-base"
+                />
+              </div>
+
+              <Select value={typeFilter} onValueChange={(value) => setTypeFilter(value as TaskTypeFilter)}>
+                <SelectTrigger className="w-full text-base">
+                  <SelectValue placeholder="Tipo" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ALL_FILTER_VALUE}>Todos los tipos</SelectItem>
+                  <SelectItem value="recurrente">Recurrentes</SelectItem>
+                  <SelectItem value="reclamo">Reclamos</SelectItem>
+                  <SelectItem value="trabajo">Trabajos</SelectItem>
+                </SelectContent>
+              </Select>
+
+              <Select value={areaFilter} onValueChange={setAreaFilter}>
+                <SelectTrigger className="w-full text-base">
+                  <SelectValue placeholder="Area" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ALL_FILTER_VALUE}>Todas las areas</SelectItem>
+                  {areaOptions.map((area) => (
+                    <SelectItem key={area} value={area}>{area}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+
+              <Select value={userFilter} onValueChange={setUserFilter}>
+                <SelectTrigger className="w-full text-base">
+                  <SelectValue placeholder="Usuario" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ALL_FILTER_VALUE}>Todos los usuarios</SelectItem>
+                  {userOptions.map((userName) => (
+                    <SelectItem key={userName} value={userName}>{userName}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+
+              <Button
+                type="button"
+                variant="outline"
+                onClick={clearFilters}
+                disabled={!hasActiveFilters}
+                className="w-full xl:w-auto"
+              >
+                Limpiar
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+
         <div className="grid gap-4 sm:grid-cols-4">
-          <Card className="border-border/50 pdf-avoid-break">
+          <Card
+            role="button"
+            tabIndex={0}
+            onClick={() => setTypeFilter(ALL_FILTER_VALUE)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault()
+                setTypeFilter(ALL_FILTER_VALUE)
+              }
+            }}
+            className={cn(
+              "cursor-pointer border-border/50 transition-colors hover:border-primary/50 hover:bg-muted/30 pdf-avoid-break",
+              typeFilter === ALL_FILTER_VALUE && "border-primary/60 bg-primary/5"
+            )}
+          >
             <CardContent className="flex items-center gap-3 p-4">
-              <BarChart3 className="h-5 w-5 text-muted-foreground" />
+              <BarChart3 className={cn(
+                "h-5 w-5",
+                typeFilter === ALL_FILTER_VALUE ? "text-primary" : "text-muted-foreground"
+              )} />
               <div>
-                <p className="text-2xl font-semibold text-card-foreground">{stats.total}</p>
+                <p className="text-2xl font-semibold text-card-foreground">{typeStats.total}</p>
                 <p className="text-sm text-muted-foreground">Total</p>
               </div>
             </CardContent>
           </Card>
           {(["recurrente", "reclamo", "trabajo"] as const).map((type) => {
             const config = TYPE_CONFIG[type]
+            const active = typeFilter === type
             return (
-              <Card key={type} className="border-border/50 pdf-avoid-break">
+              <Card
+                key={type}
+                role="button"
+                tabIndex={0}
+                onClick={() => setTypeFilter(type)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault()
+                    setTypeFilter(type)
+                  }
+                }}
+                className={cn(
+                  "cursor-pointer border-border/50 transition-colors hover:border-primary/50 hover:bg-muted/30 pdf-avoid-break",
+                  active && "border-primary/60 bg-primary/5"
+                )}
+              >
                 <CardContent className="flex items-center gap-3 p-4">
                   <config.icon className={`h-5 w-5 ${type === "recurrente" ? "text-chart-1" :
                       type === "reclamo" ? "text-destructive" :
                         "text-chart-2"
                     }`} />
                   <div>
-                    <p className="text-2xl font-semibold text-card-foreground">{stats[type]}</p>
+                    <p className="text-2xl font-semibold text-card-foreground">{typeStats[type]}</p>
                     <p className="text-sm text-muted-foreground">{config.label}s</p>
                   </div>
                 </CardContent>
@@ -327,6 +619,11 @@ export function ReportsView() {
           </CardContent>
         </Card>
 
+        <div className="grid gap-4 lg:grid-cols-2">
+          <ReportChart title="Distribucion por tipo" entries={chartByType} />
+          <ReportChart title="Areas con mas actividad" entries={chartByArea} />
+        </div>
+
         <Card className="border-border/50">
           <CardHeader className="pb-3">
             <CardTitle className="text-lg text-card-foreground">Detalle de tareas</CardTitle>
@@ -349,6 +646,7 @@ export function ReportsView() {
                     <TableHead className="text-base">Titulo</TableHead>
                     <TableHead className="text-base">Area</TableHead>
                     <TableHead className="text-base">Descripcion</TableHead>
+                    <TableHead className="text-base">Solucion</TableHead>
                     <TableHead className="text-base text-right pdf-detail-col no-print">Detalle</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -373,6 +671,9 @@ export function ReportsView() {
                         <TableCell className="text-muted-foreground text-base">{task.area ?? "-"}</TableCell>
                         <TableCell className="text-muted-foreground text-base pdf-description">
                           {task.description}
+                        </TableCell>
+                        <TableCell className="text-muted-foreground text-base pdf-description">
+                          {task.solution?.trim() ? task.solution : "-"}
                         </TableCell>
                         <TableCell className="text-right pdf-detail-col no-print">
                           <Dialog>
@@ -406,6 +707,10 @@ export function ReportsView() {
                                 <div>
                                   <p className="text-sm font-medium text-muted-foreground">Descripcion</p>
                                   <p className="whitespace-pre-wrap">{task.description || "-"}</p>
+                                </div>
+                                <div>
+                                  <p className="text-sm font-medium text-muted-foreground">Solucion</p>
+                                  <p className="whitespace-pre-wrap">{task.solution?.trim() || "-"}</p>
                                 </div>
                               </div>
                             </DialogContent>

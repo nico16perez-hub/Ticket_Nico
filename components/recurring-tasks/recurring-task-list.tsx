@@ -3,30 +3,29 @@
 import { useData } from "@/lib/data-context"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { RefreshCw, Check, X } from "lucide-react"
+import { RefreshCw, Plus, Minus } from "lucide-react"
 import { toast } from "sonner"
 
 export function RecurringTaskList() {
   const {
     recurringTasks,
-    removeRecurringTask,
-    acceptRecurringTask,
-    isRecurringTaskAccepted,
-    isRecurringTaskHidden,
+    activateRecurringTask,
+    deactivateRecurringTask,
+    isRecurringActivatedToday,
   } = useData()
 
-  async function handleAcceptanceToggle(task: (typeof recurringTasks)[number]) {
-    if (isRecurringTaskAccepted(task.id)) {
-      const removed = await removeRecurringTask(task.id)
+  async function handleDailyToggle(task: (typeof recurringTasks)[number]) {
+    if (isRecurringActivatedToday(task.id)) {
+      const removed = await deactivateRecurringTask(task)
       if (removed) {
-        toast.success(`"${task.title}" desaceptada para tu usuario`)
+        toast.success(`"${task.title}" quitada del registro de hoy`)
       }
       return
     }
 
-    const accepted = await acceptRecurringTask(task)
-    if (accepted) {
-      toast.success(`"${task.title}" aceptada para tu usuario`)
+    const activated = await activateRecurringTask(task)
+    if (activated) {
+      toast.success(`"${task.title}" agregada al registro de hoy`)
     }
   }
 
@@ -46,60 +45,53 @@ export function RecurringTaskList() {
               No hay tareas recurrentes cargadas en el sistema
             </p>
             <p className="mt-1 text-xs text-muted-foreground/70">
-              Crea una desde el formulario de arriba para que todos puedan aceptarla
+              Crea una desde el formulario de arriba para que todos puedan sumarla al registro diario
             </p>
           </div>
         ) : (
           <div className="flex flex-col gap-2">
             {recurringTasks.map((task) => {
-              const isAccepted = isRecurringTaskAccepted(task.id)
-              const isHidden = isRecurringTaskHidden(task.id)
+              const isActivatedToday = isRecurringActivatedToday(task.id)
               return (
                 <div
                   key={task.id}
                   className={`group flex items-start gap-3 rounded-lg border p-3 transition-colors ${
-                    isHidden
-                        ? "border-dashed border-border/40 bg-muted/20 opacity-65"
-                        : isAccepted
-                          ? "border-border/50 hover:bg-muted/50"
-                          : "border-dashed border-amber-500/40 bg-amber-500/5"
+                    isActivatedToday
+                      ? "border-chart-1/40 bg-chart-1/5 hover:bg-chart-1/10"
+                      : "border-dashed border-border/50 hover:bg-muted/40"
                   }`}
                 >
-                  <RefreshCw className={`mt-1 h-4 w-4 shrink-0 ${isAccepted ? "text-chart-1" : "text-muted-foreground"}`} />
+                  <RefreshCw className={`mt-1 h-4 w-4 shrink-0 ${isActivatedToday ? "text-chart-1" : "text-muted-foreground"}`} />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
-                      <p className={`text-sm font-medium ${isHidden ? "text-muted-foreground" : "text-card-foreground"}`}>
+                      <p className="text-sm font-medium text-card-foreground">
                         {task.title}
                       </p>
-                      {isHidden && (
-                        <span className="rounded-full border border-border/50 px-2 py-0.5 text-[11px] text-muted-foreground">
-                          No la realizo
-                        </span>
-                      )}
-                      {!isHidden && !isAccepted && (
-                        <span className="rounded-full border border-amber-500/40 px-2 py-0.5 text-[11px] text-amber-600">
-                          Pendiente de aceptar
-                        </span>
-                      )}
-                      {!isHidden && isAccepted && (
+                      {isActivatedToday ? (
                         <span className="rounded-full border border-chart-1/30 px-2 py-0.5 text-[11px] text-chart-1">
-                          Aceptada
+                          Registrada hoy
+                        </span>
+                      ) : (
+                        <span className="rounded-full border border-border/50 px-2 py-0.5 text-[11px] text-muted-foreground">
+                          Pendiente hoy
                         </span>
                       )}
                     </div>
-                    <p className={`mt-0.5 text-xs ${isHidden ? "text-muted-foreground/70" : "text-muted-foreground line-clamp-2"}`}>
+                    <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">
                       {task.description}
                     </p>
                   </div>
                   <Button
                     type="button"
-                    variant={isAccepted ? "outline" : "default"}
-                    size="sm"
-                    className="shrink-0"
-                    onClick={() => handleAcceptanceToggle(task)}
+                    variant={isActivatedToday ? "outline" : "default"}
+                    size="icon"
+                    className="h-9 w-9 shrink-0"
+                    onClick={() => handleDailyToggle(task)}
                   >
-                    {isAccepted ? <X className="mr-2 h-4 w-4" /> : <Check className="mr-2 h-4 w-4" />}
-                    {isAccepted ? "Desaceptar" : "Aceptar"}
+                    {isActivatedToday ? <Minus className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+                    <span className="sr-only">
+                      {isActivatedToday ? "Quitar del registro de hoy" : "Agregar al registro de hoy"}
+                    </span>
                   </Button>
                 </div>
               )
