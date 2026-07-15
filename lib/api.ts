@@ -12,6 +12,7 @@ import type {
   ReportEntry,
   ReportPeriod,
   StatisticsSummary,
+  User,
 } from "@/lib/types"
 
 // ── Fetch wrapper with auth ─────────────────────────────────
@@ -53,46 +54,56 @@ export interface SharedDashboardData {
   completedWorks: CompletedWork[]
 }
 
-const SHARED_DASHBOARD_CACHE_PREFIX = "shared-dashboard-cache"
-
-function sharedDashboardCacheKey(date: string) {
-  return `${SHARED_DASHBOARD_CACHE_PREFIX}:${date}`
+type RawCompletedWork = CompletedWork & {
+  created_at?: string
+  edited_at?: string
+  edited_by?: string
+  work_date?: string
 }
 
-function readSharedDashboardCache(date: string): SharedDashboardData | null {
-  if (typeof window === "undefined") return null
-
-  try {
-    const raw = window.localStorage.getItem(sharedDashboardCacheKey(date))
-    if (!raw) return null
-
-    const parsed = JSON.parse(raw)
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null
-
-    return {
-      dailyTasks: Array.isArray((parsed as SharedDashboardData).dailyTasks)
-        ? (parsed as SharedDashboardData).dailyTasks
-        : [],
-      claims: Array.isArray((parsed as SharedDashboardData).claims)
-        ? (parsed as SharedDashboardData).claims
-        : [],
-      completedWorks: Array.isArray((parsed as SharedDashboardData).completedWorks)
-        ? (parsed as SharedDashboardData).completedWorks
-        : [],
-    }
-  } catch {
-    return null
+function normalizeCompletedWork(work: RawCompletedWork): CompletedWork {
+  return {
+    ...work,
+    date: work.date ?? work.work_date ?? "",
+    createdAt: work.createdAt ?? work.created_at,
+    editedAt: work.editedAt ?? work.edited_at,
+    editedBy: work.editedBy ?? work.edited_by,
   }
 }
 
-function saveSharedDashboardCache(date: string, data: SharedDashboardData) {
-  if (typeof window === "undefined") return
-  window.localStorage.setItem(sharedDashboardCacheKey(date), JSON.stringify(data))
+function normalizeCompletedWorks(works: RawCompletedWork[] = []): CompletedWork[] {
+  return works.map(normalizeCompletedWork)
+}
+
+function mapDashboardTodayToSharedData(_date: string, dashboard: DashboardToday | null): SharedDashboardData | null {
+  if (!dashboard) return null
+
+  return {
+    dailyTasks: dashboard.dailyTasks ?? [],
+    claims: dashboard.claims ?? [],
+    completedWorks: normalizeCompletedWorks(dashboard.completedWorks as RawCompletedWork[]),
+  }
+}
+
+export async function getCurrentUser(): Promise<User> {
+  const token = getToken()
+  const user = await authFetch<Omit<User, "token">>("/auth/me")
+  return { ...user, token: token ?? "" }
 }
 
 export async function getSharedDashboardData(date: string): Promise<SharedDashboardData> {
   try {
-    const fallback = readSharedDashboardCache(date)
+    const dashboard = await getDashboardToday(date)
+    const data = mapDashboardTodayToSharedData(date, dashboard)
+
+    if (data) {
+      return data
+    }
+  } catch {
+    // continue with the legacy per-user fallback below
+  }
+
+  try {
     const users = await getUsers()
     const userIds = Array.from(
       new Set(
@@ -103,13 +114,11 @@ export async function getSharedDashboardData(date: string): Promise<SharedDashbo
     )
 
     if (userIds.length === 0) {
-      return (
-        fallback ?? {
-          dailyTasks: [],
-          claims: [],
-          completedWorks: [],
-        }
-      )
+      return {
+        dailyTasks: [],
+        claims: [],
+        completedWorks: [],
+      }
     }
 
     const [dailyTasksByUser, claimsByUser, completedWorksByUser] = await Promise.all([
@@ -121,22 +130,15 @@ export async function getSharedDashboardData(date: string): Promise<SharedDashbo
     const data = {
       dailyTasks: dailyTasksByUser.flat(),
       claims: claimsByUser.flat(),
-      completedWorks: completedWorksByUser.flat(),
+      completedWorks: normalizeCompletedWorks(completedWorksByUser.flat() as RawCompletedWork[]),
     }
 
-    if (data.dailyTasks.length || data.claims.length || data.completedWorks.length) {
-      saveSharedDashboardCache(date, data)
-    }
-
-    return data.dailyTasks.length || data.claims.length || data.completedWorks.length
-      ? data
-      : fallback ?? data
+    return data
   } catch {
-    const fallback = readSharedDashboardCache(date)
     return {
-      dailyTasks: fallback?.dailyTasks ?? [],
-      claims: fallback?.claims ?? [],
-      completedWorks: fallback?.completedWorks ?? [],
+      dailyTasks: [],
+      claims: [],
+      completedWorks: [],
     }
   }
 }
@@ -333,7 +335,8 @@ export async function updateClaimVerbose(
 export async function getCompletedWorks(userId: number, date?: string): Promise<CompletedWork[]> {
   try {
     const query = date ? `?date=${date}` : ""
-    return await authFetch<CompletedWork[]>(`/completed-works/${userId}${query}`)
+    const works = await authFetch<RawCompletedWork[]>(`/completed-works/${userId}${query}`)
+    return normalizeCompletedWorks(works)
   } catch {
     return []
   }
@@ -345,10 +348,11 @@ export async function createCompletedWork(
   data: CompletedWorkFormValues
 ): Promise<CompletedWork | null> {
   try {
-    return await authFetch<CompletedWork>("/completed-works", {
+    const work = await authFetch<RawCompletedWork>("/completed-works", {
       method: "POST",
       body: JSON.stringify({ ...data, userId, userName }),
     })
+    return normalizeCompletedWork(work)
   } catch {
     return null
   }
@@ -360,11 +364,11 @@ export async function createCompletedWorkVerbose(
   data: CompletedWorkFormValues
 ): Promise<{ work: CompletedWork | null; error?: string }> {
   try {
-    const work = await authFetch<CompletedWork>("/completed-works", {
+    const work = await authFetch<RawCompletedWork>("/completed-works", {
       method: "POST",
       body: JSON.stringify({ ...data, userId, userName }),
     })
-    return { work }
+    return { work: normalizeCompletedWork(work) }
   } catch (error) {
     return {
       work: null,
@@ -378,10 +382,11 @@ export async function updateCompletedWork(
   data: Partial<CompletedWorkFormValues>
 ): Promise<CompletedWork | null> {
   try {
-    return await authFetch<CompletedWork>(`/completed-works/${id}`, {
+    const work = await authFetch<RawCompletedWork>(`/completed-works/${id}`, {
       method: "PUT",
       body: JSON.stringify(data),
     })
+    return normalizeCompletedWork(work)
   } catch {
     return null
   }
@@ -392,11 +397,11 @@ export async function updateCompletedWorkVerbose(
   data: Partial<CompletedWorkFormValues>
 ): Promise<{ work: CompletedWork | null; error?: string }> {
   try {
-    const work = await authFetch<CompletedWork>(`/completed-works/${id}`, {
+    const work = await authFetch<RawCompletedWork>(`/completed-works/${id}`, {
       method: "PUT",
       body: JSON.stringify(data),
     })
-    return { work }
+    return { work: normalizeCompletedWork(work) }
   } catch (error) {
     return {
       work: null,

@@ -49,6 +49,15 @@ export interface Claim {
   description: string
   solution: string
   images: string[] | null
+  createdBy?: string
+  createdAt?: string
+  editedBy?: string
+  editedAt?: string
+  resolvedBy?: string
+  resolvedAt?: string
+  editCount?: number
+  editHistory?: { by: string; at: string }[]
+  resolutionHistory?: { by: string; at: string }[]
 }
 
 // ── Trabajo realizado (sin reclamo) ─────────────────────────
@@ -61,6 +70,7 @@ export interface CompletedWork {
   area: string
   description: string
   solution?: string
+  createdAt?: string
   editedBy?: string
   editedAt?: string
 }
@@ -76,6 +86,7 @@ export interface DashboardRecurringTask {
 export interface DashboardToday {
   date: string
   recurringTasks: DashboardRecurringTask[]
+  dailyTasks?: DailyTask[]
   claims: Claim[]
   completedWorks: CompletedWork[]
 }

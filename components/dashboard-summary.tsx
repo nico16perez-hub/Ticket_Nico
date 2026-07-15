@@ -8,8 +8,6 @@ import { useAuth } from "@/lib/auth-context"
 import { isAdmin } from "@/lib/auth"
 import type { Claim, ClaimFormValues, CompletedWorkFormValues } from "@/lib/types"
 import type { SharedDashboardData } from "@/lib/api"
-import { readCompletedWorkMetaCache, saveCompletedWorkMeta } from "@/lib/completed-work-meta"
-import { readClaimAuditCache, saveClaimAuditMeta } from "@/lib/claim-audit-meta"
 import { hasExplicitTime, parseDisplayDate } from "@/lib/date-utils"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -94,6 +92,13 @@ type SummaryTask = {
   timestamp?: string
   editedBy?: string
   editedAt?: string
+  createdBy?: string
+  createdAt?: string
+  resolvedBy?: string
+  resolvedAt?: string
+  editCount?: number
+  editHistory?: { by: string; at: string }[]
+  resolutionHistory?: { by: string; at: string }[]
   images?: string[] | null
   pending?: boolean
 }
@@ -101,17 +106,6 @@ type SummaryTask = {
 type ActivityTask = SummaryTask & {
   statusLabel: string
   metaLine: string
-}
-
-type ClaimAudit = {
-  createdBy?: string
-  createdAt?: string
-  editedBy?: string
-  editedAt?: string
-  resolvedBy?: string
-  resolvedAt?: string
-  editHistory?: { by: string; at: string }[]
-  resolutionHistory?: { by: string; at: string }[]
 }
 
 function toDateInputValue(date: Date) {
@@ -128,6 +122,39 @@ function sameId(a: string | number, b: string | number) {
 
 function normalizeTaskText(value?: string) {
   return (value ?? "").trim().toLowerCase()
+}
+
+function getTaskSortInfo(task: SummaryTask) {
+  const dateValue = task.date
+  const timestampValue = task.timestamp
+  const editedValue = task.editedAt
+
+  const explicitDate = hasExplicitTime(dateValue) ? parseDisplayDate(dateValue) : null
+  const explicitTimestamp = timestampValue && hasExplicitTime(timestampValue) ? parseDisplayDate(timestampValue) : null
+  const explicitEdited = editedValue && hasExplicitTime(editedValue) ? parseDisplayDate(editedValue) : null
+
+  const primaryValue = explicitDate ?? explicitTimestamp ?? explicitEdited ?? parseDisplayDate(dateValue)
+  const hasExplicitTimeValue = Boolean(explicitDate || explicitTimestamp || explicitEdited || hasExplicitTime(dateValue))
+
+  return {
+    value: primaryValue,
+    hasExplicitTime: hasExplicitTimeValue,
+  }
+}
+
+function sortTasksByTime(a: SummaryTask, b: SummaryTask) {
+  const aInfo = getTaskSortInfo(a)
+  const bInfo = getTaskSortInfo(b)
+
+  if (aInfo.hasExplicitTime !== bInfo.hasExplicitTime) {
+    return aInfo.hasExplicitTime ? -1 : 1
+  }
+
+  return aInfo.value.getTime() - bInfo.value.getTime()
+}
+
+function getRegisteredAt(task: SummaryTask) {
+  return task.createdAt ?? task.timestamp
 }
 
 function uniqueRecurringDailyTasks(tasks: SummaryTask[]) {
@@ -192,11 +219,8 @@ export function DashboardSummary() {
   const [isEditingWork, setIsEditingWork] = useState(false)
   const [claimEditData, setClaimEditData] = useState<ClaimFormValues | null>(null)
   const [workEditData, setWorkEditData] = useState<CompletedWorkFormValues | null>(null)
-  const [claimAudit, setClaimAudit] = useState<Record<string, ClaimAudit>>({})
-  const [workMeta, setWorkMeta] = useState<Record<string, { solution?: string; timestamp?: string; editedBy?: string; editedAt?: string }>>({})
   const [isSavingClaim, setIsSavingClaim] = useState(false)
   const [isSavingWork, setIsSavingWork] = useState(false)
-  const currentUserName = user ? `${user.name} ${user.surname}` : "Usuario actual"
 
   useEffect(() => {
     if (!selectedDate || !user) return
@@ -225,15 +249,6 @@ export function DashboardSummary() {
       cancelled = true
     }
   }, [selectedDate, user])
-
-  useEffect(() => {
-    if (!user) return
-
-    queueMicrotask(() => {
-      setClaimAudit(readClaimAuditCache())
-      setWorkMeta(readCompletedWorkMetaCache())
-    })
-  }, [user])
 
   const recurrentTasks = useMemo<SummaryTask[]>(
     () =>
@@ -271,6 +286,15 @@ export function DashboardSummary() {
           claimant: claim.claimant,
           problemType: claim.problemType,
           solution: claim.solution,
+          createdBy: claim.createdBy,
+          createdAt: claim.createdAt,
+          editedBy: claim.editedBy,
+          editedAt: claim.editedAt,
+          resolvedBy: claim.resolvedBy,
+          resolvedAt: claim.resolvedAt,
+          editCount: claim.editCount,
+          editHistory: claim.editHistory,
+          resolutionHistory: claim.resolutionHistory,
           images: claim.images,
           pending: !claim.solution?.trim(),
         })),
@@ -298,7 +322,6 @@ export function DashboardSummary() {
             )
         )
         .map((work) => {
-          const meta = workMeta[String(work.id)]
           const matchedClaim = dashboard?.claims.find(
             (claim) =>
               claim.title === work.title &&
@@ -315,17 +338,18 @@ export function DashboardSummary() {
             area: work.area,
             userName: work.userName,
             date: work.date,
-            solution: work.solution || matchedClaim?.solution || meta?.solution || "",
-            timestamp: meta?.timestamp,
-            editedBy: work.editedBy || meta?.editedBy,
-            editedAt: work.editedAt || meta?.editedAt,
+            solution: work.solution || matchedClaim?.solution || "",
+            createdAt: work.createdAt,
+            timestamp: work.createdAt,
+            editedBy: work.editedBy,
+            editedAt: work.editedAt,
           }
         }),
-    [dashboard, selectedDate, workMeta]
+    [dashboard, selectedDate]
   )
 
   const dayTasks = useMemo(
-    () => [...recurrentTasks, ...claimTasks, ...workTasks],
+    () => [...recurrentTasks, ...claimTasks, ...workTasks].sort(sortTasksByTime),
     [claimTasks, recurrentTasks, workTasks]
   )
 
@@ -337,8 +361,6 @@ export function DashboardSummary() {
   const activityTasks = useMemo<ActivityTask[]>(
     () =>
       dayTasks.map((task) => {
-        const audit = claimAudit[String(task.id)] ?? null
-
         if (task.type !== "reclamo") {
           return {
             ...task,
@@ -348,14 +370,14 @@ export function DashboardSummary() {
         }
 
         const resolved = !task.pending
-        const meta: string[] = [`Creado por: ${audit?.createdBy ?? task.userName}`]
+        const meta: string[] = [`Creado por: ${task.createdBy ?? task.userName}`]
 
-        if (audit?.editedBy) {
-          meta.push(`Editado por: ${audit.editedBy}`)
+        if (task.editedBy) {
+          meta.push(`Editado por: ${task.editedBy}`)
         }
 
         if (resolved) {
-          meta.push(audit?.resolvedBy ? `Resuelto por: ${audit.resolvedBy}` : "Resuelto sin registro")
+          meta.push(task.resolvedBy ? `Resuelto por: ${task.resolvedBy}` : "Resuelto sin registro")
         } else {
           meta.push("Pendiente de solucion")
         }
@@ -366,16 +388,15 @@ export function DashboardSummary() {
           metaLine: meta.join(" | "),
         }
       }),
-    [claimAudit, dayTasks]
+    [dayTasks]
   )
 
   const getActivityDateLabel = (task: ActivityTask) => {
-    const audit = claimAudit[String(task.id)]
     const timestamp =
       task.type === "reclamo"
         ? task.pending
-          ? audit?.createdAt
-          : audit?.resolvedAt ?? audit?.createdAt
+          ? task.createdAt
+          : task.resolvedAt ?? task.createdAt
         : task.timestamp ?? task.editedAt
 
     if (timestamp) {
@@ -515,28 +536,8 @@ export function DashboardSummary() {
     }
     const updated = updateResult.claim
 
-    const resolvedAt = new Date().toISOString()
-    const currentAudit = claimAudit[String(updated.id)] ?? {}
-    const nextAudit: ClaimAudit = {
-      ...currentAudit,
-      resolvedBy: currentUserName,
-      resolvedAt,
-      editHistory: currentAudit.editHistory ?? [],
-      resolutionHistory: [
-        ...(currentAudit.resolutionHistory ?? []),
-        { by: currentUserName, at: resolvedAt },
-      ],
-    }
-
     setClaimDetail(updated)
     setClaimEditData(buildClaimFormValues(updated))
-    setClaimAudit((prev) => ({
-      ...prev,
-      [String(updated.id)]: nextAudit,
-    }))
-    if (user) {
-      saveClaimAuditMeta(user.id, updated.id, nextAudit)
-    }
     setDashboard((prev) =>
       prev
         ? {
@@ -592,28 +593,8 @@ export function DashboardSummary() {
     }
     const updated = updateResult.claim
 
-    const editedAt = new Date().toISOString()
-    const currentAudit = claimAudit[String(updated.id)] ?? {}
-    const nextAudit: ClaimAudit = {
-      ...currentAudit,
-      editedBy: currentUserName,
-      editedAt,
-      editHistory: [
-        ...(currentAudit.editHistory ?? []),
-        { by: currentUserName, at: editedAt },
-      ],
-      resolutionHistory: currentAudit.resolutionHistory ?? [],
-    }
-
     setClaimDetail(updated)
     setClaimEditData(buildClaimFormValues(updated))
-    setClaimAudit((prev) => ({
-      ...prev,
-      [String(updated.id)]: nextAudit,
-    }))
-    if (user) {
-      saveClaimAuditMeta(user.id, updated.id, nextAudit)
-    }
     setDashboard((prev) =>
       prev
         ? {
@@ -643,27 +624,6 @@ export function DashboardSummary() {
       toast.error(result.error ?? "Error al editar el trabajo")
       return
     }
-
-    const editedAt = result.work.editedAt ?? new Date().toISOString()
-    const editedBy = result.work.editedBy ?? currentUserName
-
-    if (user) {
-      saveCompletedWorkMeta(user.id, result.work.id, {
-        solution: data.solution?.trim() ?? "",
-        editedBy,
-        editedAt,
-      })
-    }
-
-    setWorkMeta((prev) => ({
-      ...prev,
-      [String(result.work!.id)]: {
-        ...(prev[String(result.work!.id)] ?? {}),
-        solution: data.solution?.trim() ?? "",
-        editedBy,
-        editedAt,
-      },
-    }))
 
     setDashboard((prev) =>
       prev
@@ -1005,8 +965,6 @@ export function DashboardSummary() {
             <div className="flex flex-col gap-2">
               {filteredTasks.map((task) => {
                 const config = TYPE_CONFIG[task.type]
-                const taskAudit = claimAudit[String(task.id)] ?? null
-
                 return (
                   <div
                     key={`${task.type}-${task.id}`}
@@ -1137,13 +1095,13 @@ export function DashboardSummary() {
                                 <p className="text-sm font-medium text-muted-foreground">Hora</p>
                                 <p>
                                   {task.type === "reclamo"
-                                    ? taskAudit?.createdAt
-                                      ? format(parseDisplayDate(taskAudit.createdAt), "HH:mm", { locale: es })
+                                    ? task.createdAt
+                                      ? format(parseDisplayDate(task.createdAt), "HH:mm", { locale: es })
                                       : hasExplicitTime(task.date)
                                         ? format(parseDisplayDate(task.date), "HH:mm", { locale: es })
                                         : "Sin hora registrada"
-                                    : task.timestamp
-                                      ? format(parseDisplayDate(task.timestamp), "HH:mm", { locale: es })
+                                    : getRegisteredAt(task)
+                                      ? format(parseDisplayDate(getRegisteredAt(task)!), "HH:mm", { locale: es })
                                       : "Sin hora registrada"}
                                   </p>
                                 </div>
@@ -1425,20 +1383,20 @@ export function DashboardSummary() {
                                   Registro del reclamo
                                 </div>
                                 <div className="mt-2 grid gap-1 text-sm">
-                                <p>Creado por: {taskAudit?.createdBy ?? task.userName}</p>
+                                <p>Creado por: {task.createdBy ?? task.userName}</p>
                                 <p>
                                   Hora de reclamo:{" "}
-                                  {taskAudit?.createdAt
-                                    ? format(parseDisplayDate(taskAudit.createdAt), "dd/MM/yyyy HH:mm", { locale: es })
+                                  {task.createdAt
+                                    ? format(parseDisplayDate(task.createdAt), "dd/MM/yyyy HH:mm", { locale: es })
                                     : hasExplicitTime(task.date)
                                       ? format(parseDisplayDate(task.date), "dd/MM/yyyy HH:mm", { locale: es })
                                       : "Sin hora registrada"}
                                 </p>
-                                <p>Editado por: {taskAudit?.editedBy ?? "Sin registro todavia"}</p>
+                                <p>Editado por: {task.editedBy ?? "Sin registro todavia"}</p>
                                 <p>
                                   Horas de edicion:{" "}
-                                  {(taskAudit?.editHistory ?? []).length
-                                    ? (taskAudit?.editHistory ?? [])
+                                  {(task.editHistory ?? []).length
+                                    ? (task.editHistory ?? [])
                                         .map((entry) =>
                                           `${format(parseDisplayDate(entry.at), "dd/MM/yyyy HH:mm", { locale: es })} - ${entry.by}`
                                         )
@@ -1446,16 +1404,16 @@ export function DashboardSummary() {
                                     : "Sin ediciones registradas"}
                                 </p>
                                 <p>
-                                  Cantidad de ediciones: {(taskAudit?.editHistory ?? []).length ?? 0}
+                                  Cantidad de ediciones: {task.editCount ?? task.editHistory?.length ?? 0}
                                 </p>
                                 <p>
                                   Resuelto por:{" "}
-                                  {taskAudit?.resolvedBy ?? (task.pending ? "Pendiente" : "Sin registro todavia")}
+                                  {task.resolvedBy ?? (task.pending ? "Pendiente" : "Sin registro todavia")}
                                 </p>
                                 <p>
                                   Hora de resolucion:{" "}
-                                  {taskAudit?.resolvedAt
-                                    ? format(parseDisplayDate(taskAudit.resolvedAt), "dd/MM/yyyy HH:mm", { locale: es })
+                                  {task.resolvedAt
+                                    ? format(parseDisplayDate(task.resolvedAt), "dd/MM/yyyy HH:mm", { locale: es })
                                     : task.pending
                                       ? "Pendiente"
                                       : "Sin registro todavia"}
@@ -1474,8 +1432,8 @@ export function DashboardSummary() {
                                 <p>Registrado por: {task.userName}</p>
                                 <p>
                                   Hora de registro:{" "}
-                                  {task.timestamp
-                                    ? format(parseDisplayDate(task.timestamp), "dd/MM/yyyy HH:mm", { locale: es })
+                                  {getRegisteredAt(task)
+                                    ? format(parseDisplayDate(getRegisteredAt(task)!), "dd/MM/yyyy HH:mm", { locale: es })
                                     : hasExplicitTime(task.date)
                                       ? format(parseDisplayDate(task.date), "dd/MM/yyyy HH:mm", { locale: es })
                                       : "Sin hora registrada"}

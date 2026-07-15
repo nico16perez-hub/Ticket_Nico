@@ -21,8 +21,6 @@ import { useAuth } from "@/lib/auth-context"
 import { canViewAllTasks } from "@/lib/access"
 import { format } from "date-fns"
 import * as api from "@/lib/api"
-import { saveCompletedWorkMeta } from "@/lib/completed-work-meta"
-import { readClaimAuditCache, saveClaimAuditMeta } from "@/lib/claim-audit-meta"
 import { toast } from "sonner"
 
 interface DataContextValue {
@@ -62,39 +60,12 @@ interface DataContextValue {
 
 const DataContext = createContext<DataContextValue | null>(null)
 
-const HIDDEN_RECURRING_TASKS_PREFIX = "hidden-recurring-tasks"
-
 function normalizeRecurringValue(value: string) {
   return value.trim().toLowerCase()
 }
 
 function buildRecurringSignature(task: Pick<RecurringTask, "title" | "description">) {
   return `${normalizeRecurringValue(task.title)}::${normalizeRecurringValue(task.description)}`
-}
-
-function readHiddenRecurringTasks(userId: number) {
-  if (typeof window === "undefined") return new Set<string>()
-
-  try {
-    const raw = window.localStorage.getItem(`${HIDDEN_RECURRING_TASKS_PREFIX}:${userId}`)
-    if (!raw) return new Set<string>()
-
-    const parsed = JSON.parse(raw)
-    if (!Array.isArray(parsed)) return new Set<string>()
-
-    return new Set(parsed.filter((item): item is string => typeof item === "string"))
-  } catch {
-    return new Set<string>()
-  }
-}
-
-function saveHiddenRecurringTasks(userId: number, hiddenTasks: Set<string>) {
-  if (typeof window === "undefined") return
-
-  window.localStorage.setItem(
-    `${HIDDEN_RECURRING_TASKS_PREFIX}:${userId}`,
-    JSON.stringify(Array.from(hiddenTasks))
-  )
 }
 
 function uniqueRecurringTasks(tasks: RecurringTask[]) {
@@ -261,7 +232,6 @@ export function DataProvider({ children }: { children: ReactNode }) {
           const nextHiddenTasks = new Set(hiddenRecurringTasks)
           nextHiddenTasks.delete(signature)
           setHiddenRecurringTasks(nextHiddenTasks)
-          saveHiddenRecurringTasks(user.id, nextHiddenTasks)
           toast.success("Tarea recurrente restaurada para tu usuario")
           return true
         }
@@ -321,7 +291,6 @@ export function DataProvider({ children }: { children: ReactNode }) {
     const nextHiddenTasks = new Set(hiddenRecurringTasks)
     nextHiddenTasks.delete(signature)
     setHiddenRecurringTasks(nextHiddenTasks)
-    saveHiddenRecurringTasks(user.id, nextHiddenTasks)
     return true
   }, [acceptedRecurringTasks, allRecurringTasks, hiddenRecurringTasks, user])
 
@@ -359,7 +328,6 @@ export function DataProvider({ children }: { children: ReactNode }) {
       }
 
       setHiddenRecurringTasks(nextHiddenTasks)
-      saveHiddenRecurringTasks(user.id, nextHiddenTasks)
       return true
     },
     [allRecurringTasks, hiddenRecurringTasks, user]
@@ -466,12 +434,6 @@ export function DataProvider({ children }: { children: ReactNode }) {
       const { claim: created, error } = await api.createClaimVerbose(user.id, userName, data)
       if (created) {
         setClaims((prev) => [...prev, created])
-        saveClaimAuditMeta(user.id, created.id, {
-          createdBy: userName,
-          createdAt: new Date().toISOString(),
-          editHistory: [],
-          resolutionHistory: [],
-        })
         await fetchDaily()
         return true
       } else {
@@ -490,20 +452,6 @@ export function DataProvider({ children }: { children: ReactNode }) {
         return false
       }
 
-      if (user) {
-        const userName = `${user.name} ${user.surname}`
-        const currentAudit = readClaimAuditCache()[String(id)] ?? {}
-        saveClaimAuditMeta(user.id, id, {
-          ...currentAudit,
-          editedBy: userName,
-          editedAt: new Date().toISOString(),
-          editHistory: [
-            ...(currentAudit.editHistory ?? []),
-            { by: userName, at: new Date().toISOString() },
-          ],
-        })
-      }
-
       setClaims((prev) => prev.map((claim) => (claim.id === id ? updated : claim)))
       await fetchDaily()
       return true
@@ -519,10 +467,6 @@ export function DataProvider({ children }: { children: ReactNode }) {
       const { work: created, error } = await api.createCompletedWorkVerbose(user.id, userName, data)
       if (created) {
         setCompletedWorks((prev) => [...prev, created])
-        saveCompletedWorkMeta(user.id, created.id, {
-          solution: data.solution?.trim() ?? "",
-          timestamp: new Date().toISOString(),
-        })
         await fetchDaily()
         return created
       } else {

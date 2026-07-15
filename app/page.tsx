@@ -2,14 +2,14 @@
 
 import { useEffect } from "react"
 import { useRouter } from "next/navigation"
-import { getStoredUser } from "@/lib/auth"
+import { getToken } from "@/lib/auth"
 
 export default function RootPage() {
   const router = useRouter()
 
   useEffect(() => {
-    const user = getStoredUser()
-    if (user) {
+    const token = getToken()
+    if (token) {
       router.replace("/dashboard")
     } else {
       router.replace("/login")

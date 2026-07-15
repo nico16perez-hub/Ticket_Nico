@@ -108,6 +108,27 @@ function getDateRange(period: ReportPeriod): { startDate: string; endDate: strin
   }
 }
 
+function matchesPeriod(dateValue: string, period: ReportPeriod, now: Date) {
+  const taskDate = parseISO(dateValue)
+
+  switch (period) {
+    case "today":
+      return format(taskDate, "yyyy-MM-dd") === format(now, "yyyy-MM-dd")
+    case "week": {
+      const weekStart = startOfWeek(now, { weekStartsOn: 1 })
+      const weekEnd = endOfWeek(now, { weekStartsOn: 1 })
+      return isWithinInterval(taskDate, { start: weekStart, end: weekEnd })
+    }
+    case "month": {
+      const monthStart = startOfMonth(now)
+      const monthEnd = endOfMonth(now)
+      return isWithinInterval(taskDate, { start: monthStart, end: monthEnd })
+    }
+    default:
+      return true
+  }
+}
+
 function normalizeEntry(entry: CountEntry) {
   const label = entry.label ?? entry.name ?? entry.key ?? "Sin etiqueta"
   const count = entry.count ?? entry.total ?? entry.value ?? 0
@@ -274,28 +295,15 @@ export function ReportsView() {
       })),
     ]
 
-    return allTasks.filter((task) => {
-      const taskDate = parseISO(task.date)
-      switch (period) {
-        case "today":
-          return format(taskDate, "yyyy-MM-dd") === format(now, "yyyy-MM-dd")
-        case "week": {
-          const weekStart = startOfWeek(now, { weekStartsOn: 1 })
-          const weekEnd = endOfWeek(now, { weekStartsOn: 1 })
-          return isWithinInterval(taskDate, { start: weekStart, end: weekEnd })
-        }
-        case "month": {
-          const monthStart = startOfMonth(now)
-          const monthEnd = endOfMonth(now)
-          return isWithinInterval(taskDate, { start: monthStart, end: monthEnd })
-        }
-        default:
-          return true
-      }
-    })
-  }, [dailyTasks, claims, completedWorks, period])
+    return allTasks.filter((task) => matchesPeriod(task.date, period, now))
+  }, [claims, completedWorks, dailyTasks, period])
 
   const periodTasks = reportTasks.length > 0 ? reportTasks : fallbackPeriodTasks
+
+  const periodClaims = useMemo(() => {
+    const now = new Date()
+    return claims.filter((claim) => matchesPeriod(claim.date, period, now))
+  }, [claims, period])
 
   const areaOptions = useMemo(() => uniqueOptions(periodTasks.map((task) => task.area)), [periodTasks])
   const userOptions = useMemo(() => uniqueOptions(periodTasks.map((task) => task.userName)), [periodTasks])
@@ -394,6 +402,48 @@ export function ReportsView() {
     reclamo: typeFilterBaseTasks.filter((t) => t.type === "reclamo").length,
     trabajo: typeFilterBaseTasks.filter((t) => t.type === "trabajo").length,
   }
+
+  const displayStatistics = useMemo(() => {
+    if (!statistics) return null
+
+    const itemsByRecordType = (["recurrente", "reclamo", "trabajo"] as const).map((type) => ({
+      label: TYPE_CONFIG[type].label,
+      count: periodTasks.filter((task) => task.type === type).length,
+    }))
+
+    const itemsByArea = getAreaChart(periodTasks).map(({ label, count }) => ({ label, count }))
+
+    const claimsByProblemType = Object.entries(
+      periodClaims.reduce<Record<string, number>>((acc, claim) => {
+        const problemType = claim.problemType?.trim() || "Sin tipo"
+        acc[problemType] = (acc[problemType] ?? 0) + 1
+        return acc
+      }, {})
+    )
+      .map(([label, count]) => ({ label, count }))
+      .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, "es"))
+
+    const itemsByUser = Object.entries(
+      periodTasks.reduce<Record<string, number>>((acc, task) => {
+        acc[task.userName] = (acc[task.userName] ?? 0) + 1
+        return acc
+      }, {})
+    )
+      .map(([label, count]) => ({ label, count }))
+      .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, "es"))
+
+    return {
+      ...statistics,
+      totalItems: periodTasks.length,
+      totalClaims: periodTasks.filter((task) => task.type === "reclamo").length,
+      totalCompletedWorks: periodTasks.filter((task) => task.type === "trabajo").length,
+      totalRecurringTasks: periodTasks.filter((task) => task.type === "recurrente").length,
+      itemsByRecordType,
+      itemsByArea,
+      claimsByProblemType,
+      itemsByUser,
+    }
+  }, [periodClaims, periodTasks, statistics])
   const chartByType = useMemo(() => getTypeChart(filteredTasks), [filteredTasks])
   const chartByArea = useMemo(() => getAreaChart(filteredTasks), [filteredTasks])
   const hasActiveFilters =
@@ -577,7 +627,7 @@ export function ReportsView() {
           <CardContent>
             {loadingStatistics ? (
               <p className="text-base text-muted-foreground">Cargando estadisticas...</p>
-            ) : !statistics ? (
+            ) : !displayStatistics ? (
               <p className="text-base text-muted-foreground">No se pudieron cargar las estadisticas.</p>
             ) : (
               <div className="flex flex-col gap-4">
@@ -585,34 +635,34 @@ export function ReportsView() {
                   <Card className="pdf-avoid-break">
                     <CardContent className="p-4">
                       <p className="text-sm text-muted-foreground">Total items</p>
-                      <p className="text-2xl font-semibold">{statistics.totalItems ?? 0}</p>
+                      <p className="text-2xl font-semibold">{displayStatistics.totalItems ?? 0}</p>
                     </CardContent>
                   </Card>
                   <Card className="pdf-avoid-break">
                     <CardContent className="p-4">
                       <p className="text-sm text-muted-foreground">Total reclamos</p>
-                      <p className="text-2xl font-semibold">{statistics.totalClaims ?? 0}</p>
+                      <p className="text-2xl font-semibold">{displayStatistics.totalClaims ?? 0}</p>
                     </CardContent>
                   </Card>
                   <Card className="pdf-avoid-break">
                     <CardContent className="p-4">
                       <p className="text-sm text-muted-foreground">Total trabajos</p>
-                      <p className="text-2xl font-semibold">{statistics.totalCompletedWorks ?? 0}</p>
+                      <p className="text-2xl font-semibold">{displayStatistics.totalCompletedWorks ?? 0}</p>
                     </CardContent>
                   </Card>
                   <Card className="pdf-avoid-break">
                     <CardContent className="p-4">
                       <p className="text-sm text-muted-foreground">Total recurrentes</p>
-                      <p className="text-2xl font-semibold">{statistics.totalRecurringTasks ?? 0}</p>
+                      <p className="text-2xl font-semibold">{displayStatistics.totalRecurringTasks ?? 0}</p>
                     </CardContent>
                   </Card>
                 </div>
 
                 <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-                  <StatsList title="Items por tipo" entries={statistics.itemsByRecordType ?? []} />
-                  <StatsList title="Items por area" entries={statistics.itemsByArea ?? []} />
-                  <StatsList title="Reclamos por tipo de problema" entries={statistics.claimsByProblemType ?? []} />
-                  <StatsList title="Items por usuario" entries={statistics.itemsByUser ?? []} />
+                  <StatsList title="Items por tipo" entries={displayStatistics.itemsByRecordType ?? []} />
+                  <StatsList title="Items por area" entries={displayStatistics.itemsByArea ?? []} />
+                  <StatsList title="Reclamos por tipo de problema" entries={displayStatistics.claimsByProblemType ?? []} />
+                  <StatsList title="Items por usuario" entries={displayStatistics.itemsByUser ?? []} />
                 </div>
               </div>
             )}

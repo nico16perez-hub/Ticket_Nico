@@ -12,10 +12,11 @@ import CryptoJS from "crypto-js"
 import type { User, LoginCredentials } from "@/lib/types"
 import { API_URL } from "@/lib/constants"
 import {
-  getStoredUser,
+  getToken,
   storeUser,
   clearAuth,
 } from "@/lib/auth"
+import * as api from "@/lib/api"
 
 interface AuthContextValue {
   user: User | null
@@ -41,8 +42,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [SECRET_KEY])
 
   useEffect(() => {
-    queueMicrotask(() => {
-      setUser(getStoredUser())
+    queueMicrotask(async () => {
+      const token = getToken()
+      if (!token) {
+        setUser(null)
+        setLoading(false)
+        return
+      }
+
+      try {
+        const currentUser = await api.getCurrentUser()
+        setUser(currentUser)
+      } catch {
+        clearAuth()
+        setUser(null)
+      }
       setLoading(false)
     })
   }, [])
