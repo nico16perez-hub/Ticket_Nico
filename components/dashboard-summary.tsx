@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 import * as api from "@/lib/api"
-import { canViewAllTasks } from "@/lib/access"
 import { useAuth } from "@/lib/auth-context"
 import { isAdmin } from "@/lib/auth"
 import type { Claim, ClaimFormValues, CompletedWorkFormValues } from "@/lib/types"
@@ -229,13 +228,7 @@ export function DashboardSummary() {
 
     const loadDashboard = async () => {
       setLoading(true)
-      const data = canViewAllTasks(user)
-        ? await api.getSharedDashboardData(selectedDate)
-        : {
-            dailyTasks: await api.getDailyTasks(user.id, selectedDate),
-            claims: await api.getClaims(user.id, selectedDate),
-            completedWorks: await api.getCompletedWorks(user.id, selectedDate),
-          }
+      const data = await api.getSharedDashboardData(selectedDate)
       if (!cancelled) {
         setDashboard(data)
         setDailyTasks(data.dailyTasks ?? [])
@@ -547,13 +540,7 @@ export function DashboardSummary() {
         : prev
     )
 
-    const freshDashboard = canViewAllTasks(user)
-      ? await api.getSharedDashboardData(selectedDate)
-      : {
-          dailyTasks: await api.getDailyTasks(user?.id ?? 0, selectedDate),
-          claims: await api.getClaims(user?.id ?? 0, selectedDate),
-          completedWorks: await api.getCompletedWorks(user?.id ?? 0, selectedDate),
-        }
+    const freshDashboard = await api.getSharedDashboardData(selectedDate)
     if (freshDashboard) {
       setDashboard(freshDashboard)
     }

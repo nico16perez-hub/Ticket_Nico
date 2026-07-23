@@ -10,7 +10,6 @@ import type {
   DailyTask,
   DashboardToday,
   ReportEntry,
-  ReportPeriod,
   StatisticsSummary,
   User,
 } from "@/lib/types"
@@ -265,6 +264,14 @@ export async function getClaimDetail(id: string | number): Promise<Claim | null>
   }
 }
 
+function withOccurrenceDate<T extends { date?: string; time?: string }>(data: T) {
+  const { time, ...payload } = data
+  return {
+    ...payload,
+    ...(data.date && time ? { createdAt: `${data.date}T${time}:00` } : {}),
+  }
+}
+
 export async function createClaim(
   userId: number,
   userName: string,
@@ -273,7 +280,7 @@ export async function createClaim(
   try {
     return await authFetch<Claim>("/claims", {
       method: "POST",
-      body: JSON.stringify({ ...data, userId, userName }),
+      body: JSON.stringify({ ...withOccurrenceDate(data), userId, userName }),
     })
   } catch {
     return null
@@ -288,7 +295,7 @@ export async function createClaimVerbose(
   try {
     const claim = await authFetch<Claim>("/claims", {
       method: "POST",
-      body: JSON.stringify({ ...data, userId, userName }),
+      body: JSON.stringify({ ...withOccurrenceDate(data), userId, userName }),
     })
     return { claim }
   } catch (error) {
@@ -306,7 +313,7 @@ export async function updateClaim(
   try {
     return await authFetch<Claim>(`/claims/${id}`, {
       method: "PUT",
-      body: JSON.stringify(data),
+      body: JSON.stringify(withOccurrenceDate(data)),
     })
   } catch {
     return null
@@ -320,7 +327,7 @@ export async function updateClaimVerbose(
   try {
     const claim = await authFetch<Claim>(`/claims/${id}`, {
       method: "PUT",
-      body: JSON.stringify(data),
+      body: JSON.stringify(withOccurrenceDate(data)),
     })
     return { claim }
   } catch (error) {
@@ -350,7 +357,7 @@ export async function createCompletedWork(
   try {
     const work = await authFetch<RawCompletedWork>("/completed-works", {
       method: "POST",
-      body: JSON.stringify({ ...data, userId, userName }),
+      body: JSON.stringify({ ...withOccurrenceDate(data), userId, userName }),
     })
     return normalizeCompletedWork(work)
   } catch {
@@ -366,7 +373,7 @@ export async function createCompletedWorkVerbose(
   try {
     const work = await authFetch<RawCompletedWork>("/completed-works", {
       method: "POST",
-      body: JSON.stringify({ ...data, userId, userName }),
+      body: JSON.stringify({ ...withOccurrenceDate(data), userId, userName }),
     })
     return { work: normalizeCompletedWork(work) }
   } catch (error) {
@@ -384,7 +391,7 @@ export async function updateCompletedWork(
   try {
     const work = await authFetch<RawCompletedWork>(`/completed-works/${id}`, {
       method: "PUT",
-      body: JSON.stringify(data),
+      body: JSON.stringify(withOccurrenceDate(data)),
     })
     return normalizeCompletedWork(work)
   } catch {
@@ -399,7 +406,7 @@ export async function updateCompletedWorkVerbose(
   try {
     const work = await authFetch<RawCompletedWork>(`/completed-works/${id}`, {
       method: "PUT",
-      body: JSON.stringify(data),
+      body: JSON.stringify(withOccurrenceDate(data)),
     })
     return { work: normalizeCompletedWork(work) }
   } catch (error) {
@@ -411,9 +418,10 @@ export async function updateCompletedWorkVerbose(
 }
 
 // ── Informes (admin) ────────────────────────────────────────
-export async function getReport(period: ReportPeriod): Promise<ReportEntry[]> {
+export async function getReport(startDate: string, endDate: string): Promise<ReportEntry[]> {
   try {
-    return await authFetch<ReportEntry[]>(`/reports?period=${period}`)
+    const query = new URLSearchParams({ from: startDate, to: endDate })
+    return await authFetch<ReportEntry[]>(`/reports?${query.toString()}`)
   } catch {
     return []
   }

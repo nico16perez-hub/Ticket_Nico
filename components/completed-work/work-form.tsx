@@ -1,10 +1,11 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { z } from "zod"
 import { useData } from "@/lib/data-context"
+import { getCurrentLocalDateTimeFields } from "@/lib/date-utils"
 import { AREAS } from "@/lib/constants"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -29,6 +30,8 @@ import { Send, Loader2 } from "lucide-react"
 import { toast } from "sonner"
 
 const schema = z.object({
+  date: z.string().min(1, "La fecha es obligatoria"),
+  time: z.string().min(1, "La hora es obligatoria"),
   title: z.string().min(1, "El titulo es obligatorio"),
   area: z.string().min(1, "Selecciona un area"),
   description: z.string().min(1, "La descripcion es obligatoria"),
@@ -42,14 +45,30 @@ export function WorkForm() {
 
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
-    defaultValues: { title: "", area: "", description: "" },
+    defaultValues: {
+      ...getCurrentLocalDateTimeFields(),
+      title: "",
+      area: "",
+      description: "",
+    },
   })
+
+  useEffect(() => {
+    const current = getCurrentLocalDateTimeFields()
+    form.setValue("date", current.date)
+    form.setValue("time", current.time)
+  }, [form])
 
   async function onSubmit(values: FormValues) {
     setIsSubmitting(true)
     const created = await addCompletedWork(values)
     if (created) {
-      form.reset()
+      form.reset({
+        ...getCurrentLocalDateTimeFields(),
+        title: "",
+        area: "",
+        description: "",
+      })
       toast.success("Trabajo registrado correctamente")
     }
     setIsSubmitting(false)
@@ -97,6 +116,43 @@ export function WorkForm() {
                         ))}
                       </SelectContent>
                     </Select>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <FormField
+                control={form.control}
+                name="date"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Fecha</FormLabel>
+                    <FormControl>
+                      <Input
+                        type="date"
+                        className="dark:[&::-webkit-calendar-picker-indicator]:invert dark:[&::-webkit-calendar-picker-indicator]:opacity-80"
+                        {...field}
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="time"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Hora</FormLabel>
+                    <FormControl>
+                      <Input
+                        type="time"
+                        className="dark:[&::-webkit-calendar-picker-indicator]:invert dark:[&::-webkit-calendar-picker-indicator]:opacity-80"
+                        {...field}
+                      />
+                    </FormControl>
                     <FormMessage />
                   </FormItem>
                 )}

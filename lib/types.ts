@@ -98,6 +98,8 @@ export interface RecurringTaskFormValues {
 }
 
 export interface ClaimFormValues {
+  date?: string
+  time?: string
   title: string
   area: string
   claimant: string
@@ -108,6 +110,8 @@ export interface ClaimFormValues {
 }
 
 export interface CompletedWorkFormValues {
+  date?: string
+  time?: string
   title: string
   area: string
   description: string
@@ -120,6 +124,7 @@ export type ReportPeriod = "today" | "week" | "month"
 export interface ReportEntry {
   id: string | number
   date: string
+  timestamp?: string
   userName: string
   type: "recurrente" | "reclamo" | "trabajo"
   title: string

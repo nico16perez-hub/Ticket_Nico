@@ -10,6 +10,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Calendar } from "@/components/ui/calendar"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import {
   Select,
   SelectContent,
@@ -32,20 +34,12 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { BarChart3, RefreshCw, AlertTriangle, Wrench, Eye, FileDown } from "lucide-react"
-import {
-  format,
-  startOfWeek,
-  endOfWeek,
-  startOfMonth,
-  endOfMonth,
-  isWithinInterval,
-  parseISO,
-} from "date-fns"
+import { BarChart3, RefreshCw, AlertTriangle, Wrench, Eye, FileDown, CalendarDays } from "lucide-react"
+import { format, isWithinInterval, parseISO } from "date-fns"
 import { es } from "date-fns/locale"
+import type { DateRange } from "react-day-picker"
 import { parseDisplayDate } from "@/lib/date-utils"
-import type { CountEntry, ReportEntry, ReportPeriod, StatisticsSummary } from "@/lib/types"
+import type { CountEntry, ReportEntry, StatisticsSummary } from "@/lib/types"
 import { cn } from "@/lib/utils"
 
 const TYPE_CONFIG = {
@@ -72,6 +66,7 @@ type ReportTask = {
   id: string | number
   type: "recurrente" | "reclamo" | "trabajo"
   date: string
+  timestamp?: string
   userName: string
   title: string
   area?: string
@@ -87,46 +82,19 @@ type ChartEntry = {
   className?: string
 }
 
-function getDateRange(period: ReportPeriod): { startDate: string; endDate: string } {
-  const now = new Date()
-
-  switch (period) {
-    case "today": {
-      const day = format(now, "yyyy-MM-dd")
-      return { startDate: day, endDate: day }
-    }
-    case "week":
-      return {
-        startDate: format(startOfWeek(now, { weekStartsOn: 1 }), "yyyy-MM-dd"),
-        endDate: format(endOfWeek(now, { weekStartsOn: 1 }), "yyyy-MM-dd"),
-      }
-    case "month":
-      return {
-        startDate: format(startOfMonth(now), "yyyy-MM-dd"),
-        endDate: format(endOfMonth(now), "yyyy-MM-dd"),
-      }
-  }
+function matchesDateRange(dateValue: string, startDate: string, endDate: string) {
+  const taskDate = parseISO(dateValue)
+  return isWithinInterval(taskDate, {
+    start: parseISO(startDate),
+    end: parseISO(endDate),
+  })
 }
 
-function matchesPeriod(dateValue: string, period: ReportPeriod, now: Date) {
-  const taskDate = parseISO(dateValue)
+function formatTaskTime(timestamp?: string) {
+  if (!timestamp) return "-"
 
-  switch (period) {
-    case "today":
-      return format(taskDate, "yyyy-MM-dd") === format(now, "yyyy-MM-dd")
-    case "week": {
-      const weekStart = startOfWeek(now, { weekStartsOn: 1 })
-      const weekEnd = endOfWeek(now, { weekStartsOn: 1 })
-      return isWithinInterval(taskDate, { start: weekStart, end: weekEnd })
-    }
-    case "month": {
-      const monthStart = startOfMonth(now)
-      const monthEnd = endOfMonth(now)
-      return isWithinInterval(taskDate, { start: monthStart, end: monthEnd })
-    }
-    default:
-      return true
-  }
+  const parsed = parseISO(timestamp)
+  return Number.isNaN(parsed.getTime()) ? "-" : format(parsed, "HH:mm")
 }
 
 function normalizeEntry(entry: CountEntry) {
@@ -152,6 +120,7 @@ function mapReportEntry(entry: ReportEntry): ReportTask | null {
     id: entry.id,
     type: entry.type,
     date: entry.date,
+    timestamp: entry.timestamp,
     userName: entry.userName,
     title: entry.title,
     area: entry.area,
@@ -257,7 +226,10 @@ export function ReportsView() {
   const { user } = useAuth()
   const { dailyTasks, claims, completedWorks } = useData()
   const router = useRouter()
-  const [period, setPeriod] = useState<ReportPeriod>("today")
+  const [dateRange, setDateRange] = useState<DateRange>(() => {
+    const today = new Date()
+    return { from: today, to: today }
+  })
   const [search, setSearch] = useState("")
   const [typeFilter, setTypeFilter] = useState<TaskTypeFilter>(ALL_FILTER_VALUE)
   const [areaFilter, setAreaFilter] = useState(ALL_FILTER_VALUE)
@@ -268,15 +240,16 @@ export function ReportsView() {
   const [loadingStatistics, setLoadingStatistics] = useState(false)
   const isAdminUser = isAdmin(user)
 
-  const { startDate, endDate } = useMemo(() => getDateRange(period), [period])
+  const startDate = format(dateRange.from ?? new Date(), "yyyy-MM-dd")
+  const endDate = format(dateRange.to ?? dateRange.from ?? new Date(), "yyyy-MM-dd")
   const fallbackPeriodTasks = useMemo(() => {
-    const now = new Date()
     const allTasks: ReportTask[] = [
       ...dailyTasks.filter((task) => task.type === "recurrente"),
       ...claims.map((claim) => ({
         id: claim.id,
         type: "reclamo" as const,
         date: claim.date,
+        timestamp: claim.createdAt,
         userName: claim.userName,
         title: claim.title,
         area: claim.area,
@@ -287,6 +260,7 @@ export function ReportsView() {
         id: work.id,
         type: "trabajo" as const,
         date: work.date,
+        timestamp: work.createdAt,
         userName: work.userName,
         title: work.title,
         area: work.area,
@@ -295,15 +269,14 @@ export function ReportsView() {
       })),
     ]
 
-    return allTasks.filter((task) => matchesPeriod(task.date, period, now))
-  }, [claims, completedWorks, dailyTasks, period])
+    return allTasks.filter((task) => matchesDateRange(task.date, startDate, endDate))
+  }, [claims, completedWorks, dailyTasks, endDate, startDate])
 
   const periodTasks = reportTasks.length > 0 ? reportTasks : fallbackPeriodTasks
 
   const periodClaims = useMemo(() => {
-    const now = new Date()
-    return claims.filter((claim) => matchesPeriod(claim.date, period, now))
-  }, [claims, period])
+    return claims.filter((claim) => matchesDateRange(claim.date, startDate, endDate))
+  }, [claims, endDate, startDate])
 
   const areaOptions = useMemo(() => uniqueOptions(periodTasks.map((task) => task.area)), [periodTasks])
   const userOptions = useMemo(() => uniqueOptions(periodTasks.map((task) => task.userName)), [periodTasks])
@@ -367,7 +340,7 @@ export function ReportsView() {
       setLoadingStatistics(true)
       setLoadingReport(true)
       const [entries, data] = await Promise.all([
-        api.getReport(period),
+        api.getReport(startDate, endDate),
         api.getStatisticsSummary(startDate, endDate),
       ])
 
@@ -384,7 +357,7 @@ export function ReportsView() {
     return () => {
       mounted = false
     }
-  }, [endDate, isAdminUser, period, router, startDate])
+  }, [endDate, isAdminUser, router, startDate])
 
   useEffect(() => {
     if (areaFilter !== ALL_FILTER_VALUE && !areaOptions.includes(areaFilter)) {
@@ -469,7 +442,7 @@ export function ReportsView() {
 
   return (
     <>
-      <div id="reports-pdf" className="reports-pdf flex flex-col gap-6">
+      <div className="screen-report flex w-full min-w-0 max-w-full flex-col gap-6 overflow-x-hidden">
         <div>
           <h1 className="text-3xl font-semibold tracking-tight text-foreground">
             Informes
@@ -480,13 +453,26 @@ export function ReportsView() {
         </div>
 
         <div className="no-print flex flex-wrap items-center gap-3">
-          <Tabs value={period} onValueChange={(v) => setPeriod(v as ReportPeriod)}>
-            <TabsList>
-              <TabsTrigger value="today" className="text-base">Hoy</TabsTrigger>
-              <TabsTrigger value="week" className="text-base">Esta semana</TabsTrigger>
-              <TabsTrigger value="month" className="text-base">Este mes</TabsTrigger>
-            </TabsList>
-          </Tabs>
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button variant="outline" className="justify-start text-left font-normal">
+                <CalendarDays className="mr-2 h-4 w-4" />
+                {dateRange.from && dateRange.to && startDate !== endDate
+                  ? `${format(dateRange.from, "dd/MM/yyyy")} - ${format(dateRange.to, "dd/MM/yyyy")}`
+                  : format(dateRange.from ?? new Date(), "dd/MM/yyyy")}
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-auto p-0" align="start">
+              <Calendar
+                mode="range"
+                selected={dateRange}
+                onSelect={(range) => setDateRange(range?.from ? range : { from: new Date(), to: new Date() })}
+                numberOfMonths={2}
+                locale={es}
+                initialFocus
+              />
+            </PopoverContent>
+          </Popover>
 
           <Button onClick={handleExportPdf} className="ml-auto">
             <FileDown className="mr-2 h-4 w-4" />
@@ -556,7 +542,7 @@ export function ReportsView() {
           </CardContent>
         </Card>
 
-        <div className="grid gap-4 sm:grid-cols-4">
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
           <Card
             role="button"
             tabIndex={0}
@@ -669,16 +655,16 @@ export function ReportsView() {
           </CardContent>
         </Card>
 
-        <div className="grid gap-4 lg:grid-cols-2">
+        <div className="grid gap-4 xl:grid-cols-2">
           <ReportChart title="Distribucion por tipo" entries={chartByType} />
           <ReportChart title="Areas con mas actividad" entries={chartByArea} />
         </div>
 
-        <Card className="border-border/50">
+        <Card className="min-w-0 max-w-full overflow-hidden border-border/50">
           <CardHeader className="pb-3">
             <CardTitle className="text-lg text-card-foreground">Detalle de tareas</CardTitle>
           </CardHeader>
-          <CardContent>
+          <CardContent className="min-w-0">
             {filteredTasks.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-12 text-center">
                 <BarChart3 className="h-10 w-10 text-muted-foreground/40" />
@@ -687,10 +673,11 @@ export function ReportsView() {
                 </p>
               </div>
             ) : (
-              <Table>
+              <Table className="min-w-[1100px]">
                 <TableHeader>
                   <TableRow>
                     <TableHead className="text-base">Fecha</TableHead>
+                    <TableHead className="text-base">Hora</TableHead>
                     <TableHead className="text-base">Usuario</TableHead>
                     <TableHead className="text-base">Tipo</TableHead>
                     <TableHead className="text-base">Titulo</TableHead>
@@ -707,6 +694,9 @@ export function ReportsView() {
                       <TableRow key={`${task.type}-${task.id}`}>
                         <TableCell className="text-muted-foreground text-base">
                           {format(parseISO(task.date), "dd/MM", { locale: es })}
+                        </TableCell>
+                        <TableCell className="text-muted-foreground text-base">
+                          {formatTaskTime(task.timestamp)}
                         </TableCell>
                         <TableCell className="text-base">{task.userName}</TableCell>
                         <TableCell>
@@ -744,7 +734,11 @@ export function ReportsView() {
                                 </div>
                                 <div>
                                   <p className="text-sm font-medium text-muted-foreground">Fecha</p>
-                                  <p>{format(parseDisplayDate(task.date), "dd/MM/yyyy HH:mm", { locale: es })}</p>
+                                  <p>{format(parseDisplayDate(task.date), "dd/MM/yyyy", { locale: es })}</p>
+                                </div>
+                                <div>
+                                  <p className="text-sm font-medium text-muted-foreground">Hora</p>
+                                  <p>{formatTaskTime(task.timestamp)}</p>
                                 </div>
                                 <div>
                                   <p className="text-sm font-medium text-muted-foreground">Usuario</p>
@@ -776,64 +770,213 @@ export function ReportsView() {
         </Card>
       </div>
 
+      <section id="reports-print" className="print-report" aria-hidden="true">
+        <header className="print-header">
+          <div>
+            <h1>Informe de actividad</h1>
+            <p>
+              Período: {format(parseISO(startDate), "dd/MM/yyyy")} al{" "}
+              {format(parseISO(endDate), "dd/MM/yyyy")}
+            </p>
+          </div>
+          <p>Generado: {format(new Date(), "dd/MM/yyyy HH:mm")}</p>
+        </header>
+
+        <section className="print-summary">
+          <div><strong>{filteredTasks.length}</strong><span>Total</span></div>
+          <div><strong>{filteredTasks.filter((task) => task.type === "recurrente").length}</strong><span>Recurrentes</span></div>
+          <div><strong>{filteredTasks.filter((task) => task.type === "reclamo").length}</strong><span>Reclamos</span></div>
+          <div><strong>{filteredTasks.filter((task) => task.type === "trabajo").length}</strong><span>Trabajos</span></div>
+        </section>
+
+        <section className="print-breakdowns">
+          <div>
+            <h2>Actividad por área</h2>
+            <ul>
+              {chartByArea.map((entry) => (
+                <li key={entry.label}><span>{entry.label}</span><strong>{entry.count}</strong></li>
+              ))}
+            </ul>
+          </div>
+          <div>
+            <h2>Actividad por tipo</h2>
+            <ul>
+              {chartByType.map((entry) => (
+                <li key={entry.label}><span>{entry.label}</span><strong>{entry.count}</strong></li>
+              ))}
+            </ul>
+          </div>
+        </section>
+
+        <h2 className="print-table-title">Detalle de tareas</h2>
+        <table className="print-table">
+          <thead>
+            <tr>
+              <th>Fecha</th>
+              <th>Hora</th>
+              <th>Usuario</th>
+              <th>Tipo</th>
+              <th>Título</th>
+              <th>Área</th>
+              <th>Descripción</th>
+              <th>Solución</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filteredTasks.map((task) => (
+              <tr key={`print-${task.type}-${task.id}`}>
+                <td>{format(parseISO(task.date), "dd/MM/yyyy")}</td>
+                <td>{formatTaskTime(task.timestamp)}</td>
+                <td>{task.userName}</td>
+                <td>{TYPE_CONFIG[task.type].label}</td>
+                <td>{task.title}</td>
+                <td>{task.area || "-"}</td>
+                <td>{task.description || "-"}</td>
+                <td>{task.solution?.trim() || "-"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {filteredTasks.length === 0 && <p className="print-empty">No hay tareas para el período y los filtros seleccionados.</p>}
+      </section>
+
       <style jsx global>{`
+        .print-report {
+          display: none;
+        }
+
         @media print {
+          .screen-report {
+            display: none !important;
+          }
+
           body * {
-            visibility: hidden;
+            visibility: hidden !important;
           }
 
-          #reports-pdf,
-          #reports-pdf * {
-            visibility: visible;
+          #reports-print,
+          #reports-print * {
+            visibility: visible !important;
           }
 
-          #reports-pdf {
+          #reports-print {
+            display: block !important;
             position: absolute;
-            left: 0;
-            top: 0;
+            inset: 0;
             width: 100%;
-            padding: 16px;
             background: #fff;
             color: #000;
+            font-family: Arial, sans-serif;
+            font-size: 9px;
+            line-height: 1.35;
+          }
+
+          #reports-print .print-header {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            border-bottom: 2px solid #222;
+            margin-bottom: 12px;
+            padding-bottom: 8px;
+          }
+
+          #reports-print h1 {
+            font-size: 20px;
+            margin: 0 0 3px;
+          }
+
+          #reports-print h2 {
             font-size: 12px;
+            margin: 0 0 6px;
           }
 
-          .no-print {
-            display: none !important;
+          #reports-print p {
+            margin: 0;
           }
 
-          .pdf-detail-col {
-            display: none !important;
+          #reports-print .print-summary {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            border: 1px solid #aaa;
+            margin-bottom: 12px;
           }
 
-          .pdf-description {
-            white-space: normal !important;
-            overflow: visible !important;
-            max-width: none !important;
-            line-height: 1.35 !important;
+          #reports-print .print-summary div {
+            display: flex;
+            align-items: baseline;
+            gap: 6px;
+            border-right: 1px solid #aaa;
+            padding: 6px 8px;
           }
 
-          .pdf-avoid-break {
+          #reports-print .print-summary div:last-child {
+            border-right: 0;
+          }
+
+          #reports-print .print-summary strong {
+            font-size: 15px;
+          }
+
+          #reports-print .print-breakdowns {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-bottom: 14px;
+          }
+
+          #reports-print .print-breakdowns ul {
+            columns: 2;
+            list-style: none;
+            margin: 0;
+            padding: 0;
+          }
+
+          #reports-print .print-breakdowns li {
+            display: flex;
+            justify-content: space-between;
+            border-bottom: 1px dotted #bbb;
             break-inside: avoid;
-            page-break-inside: avoid;
+            padding: 2px 4px;
           }
 
-          table {
-            width: 100% !important;
-            border-collapse: collapse !important;
-            font-size: 11px !important;
+          #reports-print .print-table-title {
+            border-bottom: 1px solid #555;
+            padding-bottom: 4px;
           }
 
-          th,
-          td {
-            border: 1px solid #d4d4d8 !important;
-            padding: 6px !important;
-            vertical-align: top !important;
+          #reports-print .print-table {
+            border-collapse: collapse;
+            table-layout: auto;
+            width: 100%;
+          }
+
+          #reports-print .print-table th,
+          #reports-print .print-table td {
+            border: 1px solid #999;
+            padding: 4px;
+            text-align: left;
+            vertical-align: top;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+          }
+
+          #reports-print .print-table th {
+            background: #e8e8e8 !important;
+            font-weight: 700;
+          }
+
+          #reports-print .print-table thead {
+            display: table-header-group;
+          }
+
+          #reports-print .print-empty {
+            padding: 20px 0;
+            text-align: center;
           }
 
           @page {
-            size: A4;
-            margin: 12mm;
+            size: A4 landscape;
+            margin: 10mm;
           }
         }
       `}</style>
